@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Meetings frontend: the Next.js static export in a private S3 bucket, served
   over HTTPS by CloudFront through origin access control, optionally on a
-  custom domain. The browser calls the backend's Lambda function URL directly;
+  custom domain. The browser calls the backend through its Application Load Balancer;
   FastAPI's CORS settings allow it. The distribution is on CloudFront's
   flat-rate Free plan. Deployed in us-east-1 with everything else, which is
   also the only region CloudFront reads certificates and web ACLs from.
