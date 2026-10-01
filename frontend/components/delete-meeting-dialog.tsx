@@ -42,19 +42,15 @@ export function DeleteMeetingDialog({
         <DialogHeader>
           <DialogTitle>Delete this meeting?</DialogTitle>
           <DialogDescription>
-            &ldquo;{meeting?.name}&rdquo; and its participant list will be removed. This
-            can&apos;t be undone.
+            &ldquo;{meeting?.name}&rdquo; and its participant list will be removed. This can&apos;t
+            be undone.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button
-            variant="destructive"
-            onClick={onConfirm}
-            disabled={deleteMeeting.isPending}
-          >
+          <Button variant="destructive" onClick={onConfirm} disabled={deleteMeeting.isPending}>
             {deleteMeeting.isPending ? "Deleting…" : "Delete"}
           </Button>
         </DialogFooter>

@@ -70,9 +70,7 @@ type FormValues = z.infer<typeof formSchema>
 type ParticipantErrors = { name?: { message?: string }; email?: { message?: string } }
 
 /** Flattens react-hook-form's per-row participant errors into { rowIndex: message }. */
-function participantErrors(
-  rows: unknown,
-): Record<number, string | undefined> {
+function participantErrors(rows: unknown): Record<number, string | undefined> {
   if (!Array.isArray(rows)) return {}
   return Object.fromEntries(
     rows.map((row: ParticipantErrors | undefined, index: number) => [

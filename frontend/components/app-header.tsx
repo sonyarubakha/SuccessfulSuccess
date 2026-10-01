@@ -40,9 +40,7 @@ export function AppHeader({ onCreate }: { onCreate: () => void }) {
               <ScrollArea className="h-fit max-h-80 w-72">
                 <ul className="p-2">
                   {meetings.length === 0 ? (
-                    <li className="text-muted-foreground p-3 text-sm">
-                      No meetings today.
-                    </li>
+                    <li className="text-muted-foreground p-3 text-sm">No meetings today.</li>
                   ) : (
                     meetings.map((meeting) => (
                       <li key={meeting.id}>

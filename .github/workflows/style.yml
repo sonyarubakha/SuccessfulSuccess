@@ -1,22 +1,19 @@
 name: Style
 
-# Only on main, as requested. Add `pull_request: branches: [main]` here if you
-# later want the same gates to run before a merge.
 on:
   push:
-    branches: [main]
 
 permissions:
   contents: read
 
-# A newer push to main supersedes an in-flight run.
+# A newer push to the same branch supersedes an in-flight run.
 concurrency:
   group: style-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   backend:
-    name: Backend — ruff
+    name: Backend — Ruff
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -27,19 +24,22 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         with:
+          version: "0.12.1"
           enable-cache: true
-          cache-dependency-glob: backend/pyproject.toml
+          cache-dependency-glob: backend/uv.lock
+          python-version: "3.12"
 
-      # Pinned to the version the backend image ships, so CI and the container
-      # never disagree about what is a lint error.
-      - name: Lint
-        run: uvx ruff@0.16.6 check --output-format=github .
+      - name: Install development tools
+        run: uv sync --locked --only-group dev
 
-      - name: Format
-        run: uvx ruff@0.16.6 format --diff .
+      - name: Ruff check
+        run: uv run --no-sync ruff check .
+
+      - name: Ruff format check
+        run: uv run --no-sync ruff format --check .
 
   frontend:
-    name: Frontend — ESLint
+    name: Frontend — ESLint and Prettier
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -47,7 +47,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Matches the node:22-alpine image the frontend container is built from.
       - name: Install Node
         uses: actions/setup-node@v5
         with:
@@ -58,5 +57,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint
+      - name: ESLint
         run: npm run lint
+
+      - name: Prettier check
+        run: npm run format:check

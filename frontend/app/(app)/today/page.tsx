@@ -1,9 +1,9 @@
-import { TodayPage } from "@/components/today-page";
+import { TodayPage } from "@/components/today-page"
 
 export const metadata = {
   title: "Today — SuccessfulSuccess",
-};
+}
 
 export default function Today() {
-  return <TodayPage />;
+  return <TodayPage />
 }

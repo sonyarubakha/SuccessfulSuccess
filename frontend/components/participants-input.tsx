@@ -57,9 +57,7 @@ export function ParticipantsInput({ value, onChange, errors }: Props) {
                 <X className="size-4" aria-hidden />
               </Button>
             </div>
-            {errors?.[index] ? (
-              <p className="text-destructive text-sm">{errors[index]}</p>
-            ) : null}
+            {errors?.[index] ? <p className="text-destructive text-sm">{errors[index]}</p> : null}
           </div>
         ))}
       </div>

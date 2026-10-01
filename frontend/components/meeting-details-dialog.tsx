@@ -14,12 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Separator } from "@/components/ui/separator"
-import {
-  formatDuration,
-  formatLongDate,
-  formatTimeRange,
-  initials,
-} from "@/lib/datetime"
+import { formatDuration, formatLongDate, formatTimeRange, initials } from "@/lib/datetime"
 import type { Meeting } from "@/lib/types"
 
 export function MeetingDetailsDialog({
