@@ -1,163 +1,197 @@
 # SuccessfulSuccess
 
-## Purpose and architectural decision
+## Scope and evidence
 
-This document specifies a proposed minimal first slice, not the current implementation. Keep backend, frontend, database configuration, and CI in one repository. API and client changes can be reviewed and committed atomically, and a coding agent can understand the entire system from shared repository context.
+SuccessfulSuccess is an existing monorepo for a signed-in user's meetings. Preserve its application, technology stack, database configuration, and CI. Keeping these together provides shared system context and allows API/client changes in one commit.
 
-The first slice consists of listing and creating meetings through two API endpoints and one frontend page. It has no authentication, users, attendee entities, editing or deleting meetings, Redis, Celery, nginx, Kubernetes, or additional services. AWS, domains, HTTPS, and automated deployment belong to later lab steps; no deployment workflows are designed here.
+This document describes the checked-in implementation, based on inspection of source, manifests, lockfiles, Dockerfiles, Compose, migrations, tests, and CI. “Implemented” below means present in those files, not proven by a runtime check during this documentation task. No application, build, dependency installation, tests, or deployment was run.
 
-## Repository inspection and discrepancies
+The earlier proposed Vite application and simplified meeting contract do not apply. AWS deployment will follow separate lecturer instructions later. Existing AWS-related files are inventoried here, but this document provides no deployment procedure and does not establish that any cloud resource exists.
 
-The repository was inspected before writing this document. It already contains an application, migrations, tests, Dockerfiles, dependency lockfiles, documentation, and a style CI workflow. These files remain unchanged.
+## Repository responsibilities
 
-| Existing contents | Difference from this proposal |
+| Path | Current responsibility |
 | --- | --- |
-| `frontend/app/`, `frontend/next.config.ts`, `frontend/package.json` | Next.js App Router rather than Vite; existing UI includes authentication, dialogs, and multiple routes. Tailwind and shadcn/ui are already present. |
-| `backend/app/api/v1/meetings.py`, `backend/app/schemas/meeting.py` | Routes use `/api/v1/meetings`, support additional operations, and list by calendar day with pagination. Schemas use `name`, description, location, participants, and additional timestamps rather than this document's five fields. |
-| `backend/app/models/`, `backend/alembic/versions/` | Existing models and migrations include users, ownership, and participant entities. Existing databases are not compatible with the proposed simple meeting schema without a separately reviewed migration plan. |
-| `backend/app/auth.py`, frontend authentication modules | Current meeting operations require Cognito configuration and sign-in, conflicting with setup-free local startup. |
-| Root `docker-compose.yml` | Already has three services, but the database is called `db`; PostgreSQL is published on the host; frontend uses port 3000 and waits only for backend process startup. Proposed names, ports, and readiness gates differ. |
-| Existing Dockerfiles and manifests | Runtime image tags are not patch-pinned; backend uses an unpinned uv image and does not copy its lockfile before dependency installation. Existing dependency versions differ from the proposed baseline below. |
-| `infra/`, `backend/Dockerfile.lambda`, `backend/app/lambda_handler.py`, `Makefile`, `make.cmd`, `.env.example` | Existing infrastructure and scripts cover broader AWS, authentication, and deployment concerns outside this first slice. |
-| `README.md`, `SPEC.md` | Describe the broader implemented application; README includes copying an environment file and using a build flag. They do not establish the proposed clone-and-start contract. |
-| `.github/workflows/style.yml` | Existing lint/format CI is already colocated with the application. Preserve it; future CI also belongs here, without designing deployment. |
+| `backend/` | Python service, dependency manifest/lock, Dockerfiles, startup script, and Alembic configuration. |
+| `backend/app/` | FastAPI assembly (`main.py`), settings (`config.py`), async database sessions (`db.py`), Cognito token verification (`auth.py`), shared errors (`errors.py`), optional demo seeding, and Lambda adapter. |
+| `backend/app/api/` | HTTP dependencies connecting authentication, database sessions, and services. |
+| `backend/app/api/v1/` | `/api/v1` routes for meeting operations and the current user's profile. |
+| `backend/app/schemas/` | Pydantic input/output schemas; currently meeting, participant, and user schemas are together in `meeting.py`. |
+| `backend/app/models/` | SQLAlchemy mappings for meetings, participants, and users. |
+| `backend/app/services/` | Calendar-day rules, meeting use cases, and user profile synchronization. |
+| `backend/app/repositories/` | Database queries, owner scoping, persistence, and transaction commits. |
+| `backend/alembic/` | Migration environment wired to application settings and ORM metadata. |
+| `backend/alembic/versions/` | Revision `0001` creates meetings/participants; `0002` adds users and meeting ownership. |
+| `backend/tests/` | Pytest coverage for meeting operations, day windows, ownership, token validation, profiles, and health. Fixtures use PostgreSQL and locally signed test tokens. |
+| `frontend/` | Next.js application, TypeScript/tool configuration, package manifest/lock, component configuration, and Dockerfile. There is no Vite or `src/` layout. |
+| `frontend/app/` | App Router entry points, root layout, global Tailwind styles, and icon. `/` is the login page. |
+| `frontend/app/(app)/` | Route group with an authentication guard; parentheses do not appear in URLs. |
+| `frontend/app/(app)/today/` | `/today`: current-day meeting screen. |
+| `frontend/app/(app)/meetings/new/` | `/meetings/new`: the same screen with its create dialog initially open. |
+| `frontend/components/` | Authentication/provider components, headers/menu, meeting cards/list, participant input, and create/edit, detail, and delete dialogs. |
+| `frontend/components/ui/` | Checked-in shadcn/ui component source. |
+| `frontend/hooks/` | TanStack Query meeting reads and mutations with cache invalidation. |
+| `frontend/lib/` | HTTP client, API TypeScript types, Amplify configuration/token access, datetime formatting, and utilities. |
+| `frontend/public/` | Static asset directory, currently containing a placeholder. |
+| `.github/workflows/` | Existing `style.yml` runs backend Ruff checks and frontend ESLint on pushes to `main`. |
+| `infra/` | Existing AWS templates for authentication, image registry, backend, and frontend, plus a certificate script; preserved for later instructions. |
+| Root files | `docker-compose.yml` coordinates local services; `.env.example` lists configuration; `Makefile` contains local and AWS targets; `make.cmd` supports Windows; `README.md` and `SPEC.md` describe the app; `.gitignore`/`.gitattributes` control ignored files and text handling. |
 
-This proposal does not claim that the current checkout satisfies its startup or API contracts. Reconciling it with the existing application requires a later implementation task.
+## Existing technology stack and versions
 
-## Minimal proposed structure
+Versions below are values recorded in the repository, not newly selected versions or externally verified release claims. Exact runtime patch versions are not recorded by the floating container tags, and installed versions have not been inspected.
 
-| Folder or root file | Responsibility |
+| Component | Checked-in declaration / lock evidence |
 | --- | --- |
-| `backend/` | Python service boundary; owns its Dockerfile, startup entrypoint, `pyproject.toml`, `uv.lock`, and `alembic.ini`. |
-| `backend/app/` | FastAPI application assembly, configuration, database engine/session lifecycle, and HTTP readiness endpoint. |
-| `backend/app/api/` | Only meeting list/create HTTP handlers; validate input, transact through SQLAlchemy, and serialize API schemas. No additional service or repository layer is necessary for this slice. |
-| `backend/app/models/` | SQLAlchemy database mappings and database constraints. |
-| `backend/app/schemas/` | Separate Pydantic request and response schemas defining the public contract. |
-| `backend/alembic/` | Alembic environment that uses the backend database configuration and ORM metadata. |
-| `backend/alembic/versions/` | Committed, ordered schema migrations; creates the meetings table. |
-| `backend/tests/` | Focused API, validation, persistence, and migration checks for this contract. |
-| `frontend/` | React + Vite service boundary; owns its Dockerfile, Vite configuration, HTML entry point, `package.json`, `package-lock.json`, and shadcn component configuration. |
-| `frontend/src/` | One meeting page, application entry point, and Tailwind stylesheet. |
-| `frontend/src/components/` | Meeting list and add-meeting form components. |
-| `frontend/src/components/ui/` | Committed shadcn/ui component source needed by that page; no unrelated component collection. |
-| `frontend/src/lib/` | HTTP client, API field types, date conversion, and component utilities. |
-| `.github/` | Repository automation configuration. |
-| `.github/workflows/` | Existing and future CI configuration; deployment design is deferred. |
-| `docker-compose.yml` | Exactly three services: `postgres`, `backend`, `frontend`; local environment defaults, builds, network, readiness dependencies, and named database volume. Database configuration stays here, so no separate database folder is needed. |
-| `PROJECT.md` | This proposed architecture and the contracts between its parts. |
+| Python | `backend/pyproject.toml` requires `>=3.12`; local Dockerfile uses `python:3.12-slim`. |
+| FastAPI | Manifest `>=0.115.0`; `backend/uv.lock` records `0.141.1`. |
+| SQLAlchemy async ORM | Manifest `>=2.0.30`; lock records `2.0.54`. |
+| Alembic | Manifest `>=1.13.0`; lock records `1.20.0`. |
+| asyncpg | Manifest `>=0.29.0`; lock records `0.31.0`. |
+| Pydantic / pydantic-settings | Manifest `>=2.7.0` / `>=2.3.0`; lock records `2.13.5` / `2.15.0`. |
+| Uvicorn | Manifest `>=0.30.0`; lock records `0.53.0`. |
+| Authentication / Lambda | Backend uses PyJWT with cryptography and Mangum; frontend uses AWS Amplify (`6.22.0` in its lock). |
+| PostgreSQL | Compose uses `postgres:17-alpine`; exact patch version is not pinned. |
+| Node.js | Frontend Dockerfile uses `node:22-alpine`; CI selects Node 22. |
+| Next.js | Manifest and frontend lock record `16.3.4`. App Router, with standalone output by default. |
+| React / React DOM | Both manifest and lock record `19.2.8`. |
+| Tailwind CSS | Manifest selects major 4; lock records `4.3.3` for Tailwind and its PostCSS plugin. |
+| shadcn/ui / Radix | Component source is committed; `shadcn` lock version is `4.21.0`, `radix-ui` is `1.6.7`. `components.json` selects `radix-nova`, TSX, and RSC support. |
+| Frontend forms / data | React Hook Form `7.87.0`, Zod `4.6.1`, TanStack React Query `5.102.8` in the lock; TypeScript `5.9.3`. |
+| Tooling | Backend uses uv, pytest, pytest-asyncio, HTTPX, and Ruff; frontend uses npm and ESLint. |
 
-The repository root is the integration boundary, not another application. Existing files and folders outside this proposed structure remain as documented discrepancies.
+Backend versions and resolutions live in `backend/pyproject.toml` and `backend/uv.lock`. However, the local Dockerfile copies only `pyproject.toml` before running `uv sync`, then copies the rest of the backend. It does not install from the committed lock at that installation step and does not use frozen lock semantics. Its uv image reference uses the floating `latest` tag. Therefore the committed lock is not evidence of the packages actually installed by a fresh backend build. The Lambda Dockerfile likewise installs from the manifest rather than that lock.
 
-## Runtime and dependency baseline
+Frontend versions and resolutions live in `frontend/package.json` and `frontend/package-lock.json`. Its Dockerfile installs with `npm ci`. Dependency availability, compatibility, clean builds, and resolved runtime versions remain unverified in this task. Existing image references are reported as-is, not changed or replaced with proposed pins.
 
-These are concrete compatible baseline selections, not claims to be the newest releases. Release availability was checked against the linked primary sources. Full dependency resolution and exact container tag availability have not been exercised in this documentation-only task.
+## Local configuration and startup
 
-| Component | Proposed version | Evidence / compatibility |
-| --- | --- | --- |
-| Python | 3.12.10 | [Python release](https://www.python.org/downloads/release/python-31210/); runtime for the backend. |
-| FastAPI | 0.115.12 | [PyPI release](https://pypi.org/project/fastapi/0.115.12/); supports Python 3.12 and Pydantic 2. |
-| SQLAlchemy ORM | 2.0.40 | [PyPI release](https://pypi.org/project/SQLAlchemy/2.0.40/); asynchronous ORM sessions. |
-| Alembic | 1.15.2 | [PyPI release](https://pypi.org/project/alembic/1.15.2/); compatible with SQLAlchemy 2. |
-| Pydantic | 2.11.3 | [PyPI release](https://pypi.org/project/pydantic/2.11.3/); API validation and serialization. |
-| Uvicorn | 0.34.2 | [PyPI release](https://pypi.org/project/uvicorn/0.34.2/); FastAPI ASGI server. |
-| asyncpg | 0.30.0 | [PyPI release](https://pypi.org/project/asyncpg/0.30.0/); PostgreSQL driver for Python 3.12. |
-| uv | 0.6.14 | [PyPI release](https://pypi.org/project/uv/0.6.14/); backend dependency locking and installation. |
-| PostgreSQL | 17.4 | [PostgreSQL release](https://www.postgresql.org/docs/release/17.4/); supported by the chosen driver. |
-| Node.js | 22.14.0 | [Node release](https://nodejs.org/en/blog/release/v22.14.0); satisfies Vite 6's Node 22 support. |
-| React and React DOM | 19.0.0, both | [React 19 release](https://react.dev/blog/2024/12/05/react-19); keep both package versions identical. |
-| Vite | 6.3.5 | [Versioned package metadata](https://raw.githubusercontent.com/vitejs/vite/v6.3.5/packages/vite/package.json); compatible with Node 22. |
-| Vite React plugin | 4.4.1 | [Versioned package metadata](https://raw.githubusercontent.com/vitejs/vite-plugin-react/plugin-react%404.4.1/packages/plugin-react/package.json); declares Vite 6 compatibility. |
-| Tailwind CSS and `@tailwindcss/vite` | 4.0.0, both | [Tailwind 4 release](https://tailwindcss.com/blog/tailwindcss-v4), [plugin metadata](https://raw.githubusercontent.com/tailwindlabs/tailwindcss/v4.0.0/packages/@tailwindcss-vite/package.json). |
-| shadcn/ui | Committed React 19 / Tailwind 4 component source | [Official compatibility guidance](https://ui.shadcn.com/docs/tailwind-v4). This is copied component source, not a versioned runtime framework. A concrete CLI/registry revision remains **unverified and must be selected and verified before implementation**; no CLI version is invented here. |
+The documented local preparation is to copy `.env.example` to the gitignored `.env`, then use `docker compose up --build` from the repository root with Docker Desktop running. `make up-build` wraps that command; `make up` wraps `docker compose up`. Plain Compose can build absent images, but does not guarantee rebuilding existing images after changes. No host Python or Node installation is required for the container path.
 
-Record exact backend dependency pins in `backend/pyproject.toml` and the complete resolution in `backend/uv.lock`; install with frozen lockfile semantics during image build. Record exact frontend pins in `frontend/package.json` and all transitive packages in `frontend/package-lock.json`; build with `npm ci`. Record runtime versions in the respective Dockerfiles and PostgreSQL's version in root Compose. Pin uv explicitly in the backend build. Record the verified shadcn generator version and registry provenance in `frontend/components.json` or its adjacent documentation, and commit the generated component source; lock all of its runtime dependencies in the frontend lockfile.
+Compose has defaults for the local database and ports, so containers can start without an environment-file copy. This does **not** make the authenticated application usable without configuration: the existing frontend and backend require matching Cognito pool/client settings and a valid sign-in. Provisioning those resources is deferred to separate instructions; do not infer their existence from the repository. Optional Google sign-in also needs the configured Cognito OAuth domain and provider setup.
 
-Proposed image tags are `python:3.12.10-slim-bookworm`, `node:22.14.0-bookworm-slim`, and `postgres:17.4-bookworm`. Their registry availability and supported laptop architectures require verification before implementation. Do not replace these with floating tags. The lockfiles must be reconciled with the chosen baseline in a later task, not reused unchanged on the assumption that they already match.
+| Configuration | Existing default / use |
+| --- | --- |
+| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | `app`, `app`, `meetings`; local development credentials, not production secrets. |
+| `POSTGRES_PORT`, `BACKEND_PORT`, `FRONTEND_PORT` | Laptop ports `5432`, `8000`, `3000`. |
+| `DATABASE_URL` | Compose constructs `postgresql+asyncpg://app:app@db:5432/meetings` from database variables; the backend uses this async SQLAlchemy URL. |
+| `APP_TIMEZONE` | `Europe/Kyiv`; controls “today,” day boundaries, and meeting timestamp serialization. |
+| `CORS_ORIGINS` | `http://localhost:3000`; comma-separated origins. Backend permits credentials, all methods/headers, and exposes `Location`. |
+| `LOG_LEVEL` | `INFO`. |
+| `RUN_MIGRATIONS_ON_START` | `true`; controls the backend entrypoint's Alembic step. |
+| `AWS_REGION` / `COGNITO_REGION` | Compose maps `AWS_REGION`, default `us-east-1`, into backend `COGNITO_REGION`. |
+| `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` | Empty by default; required by backend verification and mapped to frontend `NEXT_PUBLIC_COGNITO_*` variables. |
+| `COGNITO_DOMAIN`, `COGNITO_GOOGLE_ENABLED` | Empty / `false`; mapped to public frontend OAuth settings. |
+| `NEXT_PUBLIC_API_BASE_URL` | `http://localhost:8000`; browser-facing API URL. |
+| `COGNITO_JWKS` | Backend settings can accept signing keys as JSON or base64 JSON; otherwise fetches and caches Cognito keys. Current local Compose does not explicitly pass this setting. |
+| `WATCHFILES_FORCE_POLLING`, `WATCHPACK_POLLING` | Compose sets both to `true` for backend/frontend bind-mount file watching. |
 
-## One-command local startup
+`Settings` reads environment variables and an optional `.env` via Pydantic Settings, ignores unrelated keys, validates the timezone, and defaults the API version to `1.0.0`. Root `.env` provides Compose interpolation; Compose explicitly passes its configured values into containers. AWS credentials and deployment variables also appear in `.env.example` for existing scripts; they are not a local database requirement, and no real secret values belong in this document or committed configuration.
 
-After cloning and starting Docker Desktop, the developer runs `docker compose up` from the repository root. No host Python or Node installation, environment-file copying, database creation command, migration command, seed command, or cloud credentials are required. Docker Desktop supplies Compose; initial image downloads and locked dependency installation require network access. The baseline assumes the laptop ports below are free.
+### Three existing Compose services
 
-1. Compose pulls the pinned PostgreSQL image and builds backend/frontend images from their respective Dockerfiles when images are absent. Image builds install the committed locked dependencies inside containers. Plain `docker compose up` does not promise to rebuild an already-built image after later source or dependency changes; that is outside the fresh-clone guarantee.
-2. PostgreSQL initializes the configured database and local role on an empty named volume. Its health check runs `pg_isready` against that role and database. Backend depends on PostgreSQL with `service_healthy`, not merely process startup.
-3. The backend entrypoint runs `alembic upgrade head` using the same database URL as the application. It must exit on migration failure and start Uvicorn only after migrations succeed. Repeating startup applies only outstanding migrations; ORM table auto-creation is not a substitute for Alembic.
-4. Uvicorn listens on all container interfaces at port 8000. Backend readiness is checked at `/health` using an HTTP client included in the image; the endpoint returns HTTP 200 with a JSON object containing only `status` equal to `ok` when a database `SELECT 1` succeeds, otherwise HTTP 503. This operational endpoint is separate from the two meeting endpoints.
-5. Frontend depends on backend with `service_healthy`. Vite listens on all container interfaces at port 5173, with strict port selection. Once ready, the developer opens `http://localhost:5173` and sees the page, initially with an empty meeting list.
+| Service | Internal port | Default laptop port | Dependency and readiness behavior |
+| --- | --- | --- | --- |
+| `db` | 5432 | 5432 | No service dependency. `pg_isready` checks configured user/database every 5 seconds, timeout 5 seconds, 10 retries. |
+| `backend` | 8000 | 8000 | Waits for `db` with `service_healthy`. Own health check uses curl against `/health` every 10 seconds, timeout 5 seconds, 10 retries, start period 20 seconds. |
+| `frontend` | 3000 | 3000 | Waits for backend `service_started`, not backend health. No frontend health check is configured. |
 
-Readiness checks should have explicit intervals, timeouts, retries, and initialization grace periods, allowing a normal first startup without hiding failures indefinitely. Use a 5-second interval, 5-second timeout, 30 retries, and a 30-second start period as local defaults. Logs must expose migration or readiness failures. No fourth migration service is introduced.
+The port mappings do not explicitly bind to loopback, so the file does not promise laptop-only access. Services listen on `0.0.0.0` inside containers. PostgreSQL uses named volume `pgdata` at `/var/lib/postgresql/data`; data persists across container recreation and normal `docker compose down`. `docker compose down -v` (also `make down-v`) deletes that data. Initialization variables apply to an empty database volume, not as a password reset on every startup.
 
-### Compose services
+Compose builds backend with development dependencies enabled and frontend using its `dev` target. Backend dependencies are installed under `/usr/local`; source is mounted at `/app`. The entrypoint runs `alembic upgrade head` unless disabled, exits on failure, then executes Uvicorn with reload at port 8000. Alembic uses the application's database URL. Frontend starts `next dev` at port 3000, mounts frontend source, and keeps anonymous volumes for `/app/node_modules` and `/app/.next`.
 
-| Service | Internal listening port | Laptop exposure | Dependencies | Dependency readiness / own readiness |
-| --- | --- | --- | --- | --- |
-| `postgres` | 5432 | None | None | Own health check: `pg_isready` for the configured database and role. |
-| `backend` | 8000 | `127.0.0.1:8000` mapped to 8000 | `postgres` | Wait for PostgreSQL `service_healthy`; run migrations before listening; own `/health` checks database connectivity. |
-| `frontend` | 5173 | `127.0.0.1:5173` mapped to 5173 | `backend` | Wait for backend `service_healthy`; own HTTP probe of `/` on port 5173 using the container's Node runtime confirms Vite serves the page. |
+Open `http://localhost:3000` for the login page; API documentation is at `http://localhost:8000/docs`, and public health is at `http://localhost:8000/health`. Frontend startup can precede completed backend migrations/readiness because its dependency gate is only process startup.
 
-Use a named volume `pgdata` mounted at `/var/lib/postgresql/data` for PostgreSQL 17. Data survives container replacement, normal shutdown, and `docker compose down`. Explicit volume deletion, such as `docker compose down -v`, deletes local meetings; startup must never delete the volume automatically. Changing initialization credentials later does not reinitialize a populated volume.
+### Browser versus container addresses
 
-### Local defaults and address contract
+The browser directly calls `NEXT_PUBLIC_API_BASE_URL` (normally `http://localhost:8000`) with `/api/v1/...` paths and a bearer access token. There is no configured Vite proxy or Next.js API rewrite. These requests cross origins from port 3000 to port 8000 and rely on backend CORS settings. Changing laptop ports requires updating the browser API URL and allowed frontend origin accordingly.
 
-Compose provides literal development-only defaults: database `successfulsuccess`, user `successfulsuccess_dev`, and password `local_dev_only`. These are disposable local credentials, never production credentials. The backend connection URL is `postgresql+asyncpg://successfulsuccess_dev:local_dev_only@postgres:5432/successfulsuccess`. Database access remains on the Compose network; only loopback host ports are published. Do not place database credentials or connection URLs in browser-delivered environment variables.
+Docker service name `db` is used by the backend at `db:5432`; `backend:8000` is an internal Docker address, not the browser URL. `localhost` inside a container is that container itself. The frontend has no database connection. Public Cognito identifiers and API addresses are browser configuration, not database credentials.
 
-The browser loads the page at `http://localhost:5173` and calls relative `/api/meetings` URLs. Vite's local development proxy forwards `/api` unchanged to `http://backend:8000`. `backend` and `postgres` are Docker DNS service names usable by containers, not by the developer's browser. Container `localhost` refers to that same container, not the laptop or another service.
+## Existing API contracts
 
-The laptop can reach the backend directly at `http://localhost:8000` for API inspection. The frontend's browser requests use the Vite origin and proxy, so no cross-origin browser configuration is required for this page. Neither direct browser calls to `http://backend:8000` nor frontend connections to PostgreSQL are allowed by this architecture.
+FastAPI registers `/api/v1`. Meeting and profile routes require `Authorization: Bearer <Cognito access token>`. The verifier checks RS256 signatures, issuer, token expiry/required claims, access-token use, and client ID. ID tokens are not accepted as bearer access tokens. The profile sync body separately carries an ID token and verifies that it belongs to the same user.
 
-## Meeting and API contract
+Every meeting query is scoped to the authenticated user's Cognito `sub`. Accessing another user's meeting behaves as not found. Missing/invalid tokens return 401 when authentication is configured; missing pool/client configuration returns 503. `/health` and generated API documentation are public.
 
-All request and response bodies use JSON, with `application/json` content type. The public routes are exactly `/api/meetings` without a `/v1` segment. No authentication header is required.
+### Meeting input and output
 
-### Fields
+Create and full-replacement update use the same `MeetingCreate` schema:
 
-| Field | API type | Create request | Read response | Validation / meaning |
-| --- | --- | --- | --- | --- |
-| `id` | UUID string | Must be absent | Required | Server generates a UUID v4 for each successfully created meeting; returned in canonical hyphenated form. |
-| `title` | String | Required | Required | Trim surrounding whitespace, then require 1–200 characters; reject blank strings. Return the normalized title. |
-| `starts_at` | RFC 3339 datetime string | Required | Required | Must contain a time and explicit UTC offset or `Z`, e.g. `2026-10-01T09:00:00Z` or `2026-10-01T12:00:00+03:00`; timezone-naive strings and numeric timestamps are invalid. |
-| `ends_at` | RFC 3339 datetime string | Required | Required | Same format; must be strictly later than `starts_at` when compared as instants. |
-| `attendee_count` | JSON integer | Required | Required | From 0 through 2,147,483,647, matching PostgreSQL's integer range; reject booleans, fractional numbers, and numeric strings. It is a count only, with no attendee records. |
+| Field | Input type, requiredness, and validation |
+| --- | --- |
+| `name` | Required string, 1–200 characters; surrounding whitespace is stripped and a blank result rejected. Length validation runs before the custom stripping validator. |
+| `description` | Optional string or null, default null, maximum 2,000 characters; stripped, with empty text converted to null. |
+| `location` | Optional string or null, default null, maximum 200 characters; stripped, with empty text converted to null. |
+| `starts_at` | Required datetime; must be timezone-aware. JSON clients send an ISO datetime with `Z` or an explicit offset, e.g. `2026-10-01T10:00:00+03:00`. |
+| `ends_at` | Required timezone-aware datetime; strictly later than `starts_at`. |
+| `participants` | Optional array, default empty, maximum 50 elements. Each contains required `name` (1–120 characters, stripped and nonblank) and optional `email` (validated email string or null, default null). Duplicate normalized name/email pairs are rejected using case-insensitive comparison. |
 
-All five read fields are non-null. All four create fields are non-null and have no defaults. Reject unknown create fields, including a client-supplied `id`. Do not coerce strings into integers or numbers into titles. Accept valid timestamps in the past; there is no future-only rule or overlap restriction. Normalize stored instants and response timestamps to UTC; responses use `Z` and preserve fractional seconds when present, to at most microsecond precision. Local datetime form inputs must be converted to offset-aware strings before submission; the page displays instants in the browser's local timezone.
+There are no API fields called `title` or `attendee_count`. Schemas do not enable strict validation or forbid extra fields: Pydantic's default handling applies, including ignoring unknown object keys rather than rejecting them. Datetime fields are Pydantic datetime values with an awareness validator, not an explicitly string-only parser. No future-only or overlap prohibition is implemented.
 
-### Exact endpoint shapes
+A `MeetingRead` JSON object contains exactly these schema fields:
+
+| Field | Output type / meaning |
+| --- | --- |
+| `id` | Server-generated UUID v4 serialized as a string. |
+| `name` | String. |
+| `description`, `location` | String or null; keys are present. |
+| `starts_at`, `ends_at` | ISO datetime strings serialized in `APP_TIMEZONE`, including its UTC offset. |
+| `participants` | Ordered array of objects with `id` (generated UUID string), `name` (string), `email` (string or null), and `position` (integer, zero-based input order). |
+| `created_at`, `updated_at` | Generated datetime strings, also serialized in `APP_TIMEZONE`. |
+
+### Meeting endpoints
 
 | Endpoint | Request | Success response |
 | --- | --- | --- |
-| `GET /api/meetings` | No body; no supported filters or pagination parameters. | HTTP **200 OK**. Top-level JSON array of meeting objects. Each object has exactly `id`, `title`, `starts_at`, `ends_at`, `attendee_count`, with the types above. Return all meetings ordered by `starts_at` ascending and then `id` ascending for ties. An empty database returns an empty array. No envelope or metadata. |
-| `POST /api/meetings` | One top-level JSON object containing exactly `title`, `starts_at`, `ends_at`, `attendee_count`. | HTTP **201 Created** only after the database transaction commits. One top-level meeting object containing exactly the five read fields, including the server-generated `id` and normalized values. No response envelope. |
+| `GET /api/v1/meetings` | No body. Optional query `date` (`YYYY-MM-DD`, defaults to today in `APP_TIMEZONE`), `q` (string, max 200 characters), `limit` (integer, default 100, range 1–500), and `offset` (integer, default 0, minimum 0). | **200** JSON object with `items` (array of `MeetingRead`), `total` (integer count before pagination), `limit` (integer), `offset` (integer), and `date` (selected calendar date string). Empty results still return this envelope. |
+| `GET /api/v1/meetings/{meeting_id}` | UUID path parameter; no body. | **200** `MeetingRead`; **404** for an unknown or differently owned meeting. |
+| `POST /api/v1/meetings` | `MeetingCreate` object. | **201** `MeetingRead` after commit; `Location` is `/api/v1/meetings/{id}`. Ensures the owner's database user row exists. |
+| `PUT /api/v1/meetings/{meeting_id}` | UUID path parameter and complete `MeetingCreate` object, including required name/times. | **200** `MeetingRead`; replaces all meeting input fields and the participant list. Participants receive new IDs; omitted optional fields take schema defaults. **404** if not owned/found. |
+| `DELETE /api/v1/meetings/{meeting_id}` | UUID path parameter; no body. | **204**, no body; removes the meeting and its participants. **404** if not owned/found. |
 
-Unknown query parameters on the list endpoint are rejected with HTTP 422 rather than silently enabling a broader API. There is no individual-meeting read route in this slice, so no `Location` header pointing to an unimplemented route is required. Duplicate payloads create separate meetings; there is no deduplication or idempotency contract.
+Listing uses overlap with the half-open day window: meeting start is before the next midnight and meeting end is after the selected midnight. A cross-midnight meeting can appear on both days. Results sort by start time, then name; no unique tie-breaker is specified. Search applies PostgreSQL case-insensitive `LIKE` patterns to name or description using the trimmed query; wildcard characters are not escaped. Unknown query parameters are not explicitly rejected.
 
-### Validation errors
+### User profile endpoints
 
-Malformed JSON, missing required data, wrong field types, nulls, extra fields, invalid timestamps, invalid count ranges, or invalid time ordering return HTTP **422 Unprocessable Entity** and create no row. Define a normalized FastAPI-style error body with exactly one top-level key, `detail`, containing a nonempty array of error objects:
+`GET /api/v1/me` has no body and returns **200** `UserRead`, creating a bare database user row if necessary. `POST /api/v1/me/sync` requires an object containing `id_token` (nonempty string) and returns **200** `UserRead` after synchronizing validated token profile claims. A token for another user or of the wrong token type returns 401.
 
-| Error object field | Type | Meaning |
-| --- | --- | --- |
-| `loc` | Array of strings and/or integers | Error location: typically `body` followed by a field name, or `query` followed by an unsupported parameter; malformed JSON can use `body` followed by a character offset. |
-| `msg` | String | Human-readable validation explanation. Wording is not a client parsing contract. |
-| `type` | String | Machine-readable validation category, such as `missing`, `string_type`, `int_type`, `extra_forbidden`, `json_invalid`, or `value_error`. |
+`UserRead` has `id` (Cognito subject string), nullable strings `email`, `name`, `given_name`, `family_name`, `picture_url`, boolean `email_verified`, string `auth_provider`, datetime strings `created_at` and `updated_at`, and nullable datetime string `last_login_at`. Unlike meeting timestamps, user timestamps have no custom application-timezone serializer. Synchronization derives profile fields from claims and records login time; ordinary profile reads do not synchronize those claims.
 
-Normalize framework validation errors to those three keys; do not return raw inputs, exception context, or internal database details. Attach invalid time ordering to `ends_at`. The frontend uses locations to display field errors and a general message for body-level errors. Server or database failures are unsuccessful responses, never a fabricated 201; show a general failure and keep the form values.
+### Errors and health
 
-## Contracts between the parts
+Registered errors use a top-level `error` object containing `code` (string), `message` (string), and `details` (array). Validation errors return **422**, code `validation_error`, with detail objects containing `field` and `message` strings. Field locations are flattened, e.g. `participants.0.email`; the response message uses the first validation message. This is not FastAPI's default `detail` envelope.
 
-**Database and backend:** PostgreSQL owns persisted meeting rows. The SQLAlchemy meeting model maps a UUID primary key, a non-null title of up to 200 characters, two non-null timezone-aware timestamp columns (`TIMESTAMP WITH TIME ZONE`), and a non-null integer count. Database check constraints enforce a positive interval, a nonblank title, and a nonnegative count. PostgreSQL stores instants rather than the original timezone name. Alembic owns schema evolution; application startup owns applying committed migrations. Each create operation uses one transaction; a failed transaction rolls back.
+Other registered outcomes include **401** `unauthorized` (with bearer challenge for authentication errors), **404** `not_found`, **503** `service_unavailable`, and **500** `internal_error` with a generic message. Detail arrays are empty unless supplied. Invalid UUID/query/body values are subject to request validation; authentication dependency failures can occur before body errors are returned.
 
-**Database models and API schemas:** SQLAlchemy models describe storage, constraints, and ORM behavior; Pydantic schemas describe allowed request fields and serialized response fields. Use separate create and read schemas. Never expose an ORM instance as an uncontrolled JSON dictionary or accept all database columns as input. API validation provides useful 422 responses before persistence, while database constraints protect stored data independently. The backend's OpenAPI description must agree with the tables above.
+`GET /health` executes database `SELECT 1`. Success is **200** with `status: "ok"`, `database: "ok"`, and `version` (default `"1.0.0"`). Database failure is **503** in the shared error envelope. Health does not validate Cognito setup or test every migrated table, so a healthy backend is not proof of a usable authenticated app.
 
-**Backend and frontend:** Only the HTTP JSON contract connects them. Frontend API types mirror those schemas; frontend code imports no Python models and has no direct database access. The page loads the list on entry, displays all five fields, and provides a form for the four create fields. During submission, prevent duplicate clicks. After a successful 201, clear the form and refetch `GET /api/meetings` to update the list in server order. If the refetch fails, report that creation succeeded but refreshing failed and allow retrying the list fetch; do not resubmit the already successful POST. Validation and network failures preserve form values and do not imply creation succeeded.
+## Contracts between application parts
 
-**Compose and applications:** Compose supplies internal URLs and local defaults, installs dependencies through builds, sequences readiness, and provides durable database storage. Applications must fail visibly on missing connectivity or migration errors. No external account or preexisting cloud resource is part of local startup.
+**Storage and migrations:** SQLAlchemy maps `meetings`, `participants`, and `users`. Meetings store UUIDs, name, description/location, timezone-aware timestamps, generated created/updated timestamps, and nullable owner reference. Participants reference meetings with database cascade deletion and are ordered by position; ORM replacement uses delete-orphan behavior. Users are keyed by Cognito subject. The database enforces `ends_at > starts_at`. Revision `0002` leaves old meetings with null ownership; owner-scoped queries make those rows invisible. No automatic reassignment is implemented.
 
-**CI and repository:** Keep future CI alongside the applications so checks can use the same dependency manifests, lockfiles, and API contract. Existing CI is preserved. No new CI jobs, deployment pipelines, or infrastructure are specified or implemented by this document.
+**Models versus schemas:** ORM models define persistence, relationships, and constraints. Pydantic schemas define accepted HTTP data and response serialization using ORM attributes. Ownership is assigned from authentication rather than request input and is not exposed in `MeetingRead`. Service code owns day windows and user synchronization; repositories own SQL and commit writes. The session dependency rolls back on exceptions. Production startup uses Alembic, while test fixtures recreate tables from ORM metadata; those tests do not establish migration correctness.
 
-## Assumptions requiring review
+**Frontend and API:** TypeScript shapes in `frontend/lib/types.ts` mirror Pydantic schemas. The fetch client attaches access tokens, parses the shared errors, handles 204 without JSON parsing, and initiates sign-out on 401. Network failures become a client error with status 0. React Query caches meeting lists; successful create/update/delete invalidates all meeting query keys and refreshes active lists. A meeting outside today's window will not appear on the Today screen merely because creation succeeded.
 
-- Approve the proposed contract over the existing Next.js, authenticated, day-filtered application; any conversion or existing-data migration needs a separate task.
-- Confirm UUID v4 identifiers, title length 200, nonnegative integer counts including zero, UTC response normalization, and an unpaginated all-meetings list are appropriate for the first slice.
-- Confirm browser-local timezone display and the proxy-based browser address contract, including loopback ports 5173 and 8000.
-- Before implementation, verify exact Docker image tags and target architectures, resolve and validate the dependency locks, and select a verified shadcn CLI/registry revision compatible with React 19 and Tailwind 4. The documented baseline is release-verified where linked, but has not been integration-tested here.
+**Frontend behavior and time:** `/` hosts authentication; protected routes redirect signed-out users there. The app implements email/password sign-in, sign-up, email confirmation/resending, and password reset through Cognito, with optional Google OAuth. After loading a signed-in user, the auth provider attempts ID-token profile synchronization once per subject in that provider lifecycle; failures are logged and do not block the page. Authentication events clear cached data to avoid retaining another user's meetings.
 
-This document records the monorepo decision, minimal folder responsibilities, API and persistence contracts, concrete dependency baseline, three-service local startup behavior, and discrepancies with the current checkout. It changes documentation only.
+The Today page shows list/loading/error/empty states and create, detail, edit, and delete dialogs. The form uses React Hook Form and Zod, creates offset-aware timestamps from the browser's calendar date/time, submits through mutations, closes on success, and displays server validation messages on mapped fields plus a toast on failure. Its single-date form requires end time after start time, so it does not provide the API's cross-midnight input capability. Displayed meeting times are read from API strings in the application timezone rather than converted to browser timezone. The visible count uses returned item count, not the total across pagination; the frontend meeting hook does not expose limit/offset controls.
+
+**CI and existing cloud files:** The style workflow runs only on pushes to `main`, with Ruff `0.16.6` and frontend `npm ci`/ESLint. It does not run application tests or builds. The backend lock records a different Ruff version (`0.16.8`), and the Docker build can resolve another version, so CI/tool parity is not guaranteed. Existing Lambda Dockerfile/adapter, Next.js export stage, infrastructure templates, and AWS Make targets remain preserved; deployment validation and execution await later instructions.
+
+## Implemented versus missing or unverified
+
+Implemented in source/configuration: authenticated owner-scoped meeting CRUD, participant persistence, user profile synchronization, application-timezone day filtering, frontend dialogs/cache updates, automatic local Alembic startup, PostgreSQL persistence, backend health checks, and style CI. Backend tests cover many of these behaviors but were not executed during this task.
+
+The following limitations or verification gaps are visible:
+
+- Fresh-clone containers have database/port defaults, but no configured Cognito pool/client. Complete sign-in and meeting use require external authentication configuration; setup-free offline usage is not implemented.
+- Frontend waits for backend process startup rather than readiness and has no Compose health check. Backend health only establishes database connectivity.
+- Runtime patch versions are floating; backend builds do not consume the committed lock at installation time. Exact installed packages, clean builds, and compatibility are unverified.
+- PostgreSQL and application ports are published without explicit loopback restriction. Local credentials are development defaults.
+- No frontend test suite or test/build CI jobs were found. Backend fixtures use ORM-created schemas rather than exercising Alembic upgrades.
+- No runtime check confirmed migrations, local startup, Cognito sign-in, Google redirects, browser/API communication, current CI results, or AWS resources. Existing documentation describing something as implemented is not independent execution evidence.
+- Some Make targets (`test`, `psql`) hard-code `app` and database names, so changing Compose database credentials does not automatically update those helpers.
+
+This revision replaces the conflicting proposal with the current architecture, contracts, configuration, and startup requirements. Only `PROJECT.md` is updated; deployment remains a separate lab step.
