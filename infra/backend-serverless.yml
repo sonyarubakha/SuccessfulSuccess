@@ -1,0 +1,312 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Parallel serverless backend for SuccessfulSuccess: FastAPI in a Lambda
+  container behind a Lambda Function URL, connected to a private Aurora
+  Serverless v2 PostgreSQL cluster that can pause when idle.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: successfulsuccess-serverless
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+
+  ImageUri:
+    Type: String
+    Description: ECR image URI pinned by digest.
+
+  Architecture:
+    Type: String
+    Default: x86_64
+    AllowedValues:
+      - x86_64
+      - arm64
+
+  MemorySize:
+    Type: Number
+    Default: 512
+    MinValue: 128
+    MaxValue: 10240
+
+  MaxConcurrency:
+    Type: Number
+    Default: 0
+    MinValue: 0
+
+  DbEngineVersion:
+    Type: String
+    Default: ""
+
+  DbMinCapacity:
+    Type: Number
+    Default: 0
+    MinValue: 0
+
+  DbMaxCapacity:
+    Type: Number
+    Default: 1
+    MinValue: 1
+
+  DbAutoPauseSeconds:
+    Type: Number
+    Default: 300
+    MinValue: 300
+    MaxValue: 86400
+
+  DbName:
+    Type: String
+    Default: meetings
+
+  DbUsername:
+    Type: String
+    Default: app
+
+  DbPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 41
+    AllowedPattern: "[a-zA-Z0-9_-]+"
+
+  AppTimezone:
+    Type: String
+    Default: Europe/Kyiv
+
+  CorsOrigins:
+    Type: String
+    Default: "*"
+
+  LogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues:
+      - DEBUG
+      - INFO
+      - WARNING
+      - ERROR
+
+  CognitoUserPoolId:
+    Type: String
+
+  CognitoClientId:
+    Type: String
+
+  CognitoJwks:
+    Type: String
+    Description: Base64-encoded Cognito JWKS document.
+
+Conditions:
+  HasDbEngineVersion: !Not [!Equals [!Ref DbEngineVersion, ""]]
+  HasMaxConcurrency: !Not [!Equals [!Ref MaxConcurrency, 0]]
+
+Resources:
+  FunctionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${ProjectName} Lambda backend"
+      VpcId: !Ref VpcId
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-function"
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${ProjectName} Aurora database"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref FunctionSecurityGroup
+          Description: Lambda to PostgreSQL
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-db"
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub "${ProjectName} database subnets"
+      SubnetIds: !Ref SubnetIds
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  DbCluster:
+    Type: AWS::RDS::DBCluster
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DBClusterIdentifier: !Sub "${ProjectName}-db"
+      Engine: aurora-postgresql
+      EngineVersion: !If
+        - HasDbEngineVersion
+        - !Ref DbEngineVersion
+        - !Ref "AWS::NoValue"
+      DatabaseName: !Ref DbName
+      MasterUsername: !Ref DbUsername
+      MasterUserPassword: !Ref DbPassword
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref DbSecurityGroup
+      StorageEncrypted: true
+      BackupRetentionPeriod: 1
+      DeletionProtection: false
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: !Ref DbMinCapacity
+        MaxCapacity: !Ref DbMaxCapacity
+        SecondsUntilAutoPause: !Ref DbAutoPauseSeconds
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  DbInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DBInstanceIdentifier: !Sub "${ProjectName}-db-1"
+      DBClusterIdentifier: !Ref DbCluster
+      Engine: aurora-postgresql
+      DBInstanceClass: db.serverless
+      PubliclyAccessible: false
+      AutoMinorVersionUpgrade: true
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ProjectName}-backend"
+      RetentionInDays: 7
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - DbInstance
+    Properties:
+      FunctionName: !Sub "${ProjectName}-backend"
+      Description: Meetings API running FastAPI through Mangum
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ImageUri
+      Architectures:
+        - !Ref Architecture
+      Role: !GetAtt FunctionRole.Arn
+      MemorySize: !Ref MemorySize
+      ReservedConcurrentExecutions: !If
+        - HasMaxConcurrency
+        - !Ref MaxConcurrency
+        - !Ref "AWS::NoValue"
+      Timeout: 60
+      LoggingConfig:
+        LogGroup: !Ref LogGroup
+      VpcConfig:
+        SubnetIds: !Ref SubnetIds
+        SecurityGroupIds:
+          - !Ref FunctionSecurityGroup
+      Environment:
+        Variables:
+          DATABASE_URL: !Sub
+            - "postgresql+asyncpg://${DbUsername}:${DbPassword}@${Endpoint}:${Port}/${DbName}"
+            - Endpoint: !GetAtt DbCluster.Endpoint.Address
+              Port: !GetAtt DbCluster.Endpoint.Port
+          APP_TIMEZONE: !Ref AppTimezone
+          CORS_ORIGINS: !Ref CorsOrigins
+          LOG_LEVEL: !Ref LogLevel
+          COGNITO_REGION: !Ref AWS::Region
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
+          COGNITO_CLIENT_ID: !Ref CognitoClientId
+          COGNITO_JWKS: !Ref CognitoJwks
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  FunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt ApiFunction.Arn
+      AuthType: NONE
+      InvokeMode: BUFFERED
+
+  FunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+  FunctionUrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: "*"
+      InvokedViaFunctionUrl: true
+
+Outputs:
+  ApiUrl:
+    Description: Direct Lambda Function URL without a trailing slash
+    Value: !Sub
+      - "https://${Host}"
+      - Host: !Select [2, !Split ["/", !GetAtt FunctionUrl.FunctionUrl]]
+
+  HealthUrl:
+    Description: Health endpoint
+    Value: !Sub
+      - "https://${Host}/health"
+      - Host: !Select [2, !Split ["/", !GetAtt FunctionUrl.FunctionUrl]]
+
+  DocsUrl:
+    Description: Swagger UI
+    Value: !Sub
+      - "https://${Host}/docs"
+      - Host: !Select [2, !Split ["/", !GetAtt FunctionUrl.FunctionUrl]]
+
+  FunctionUrlDomain:
+    Description: Lambda Function URL host name
+    Value: !Select [2, !Split ["/", !GetAtt FunctionUrl.FunctionUrl]]
+
+  DatabaseEndpoint:
+    Description: Aurora writer endpoint
+    Value: !GetAtt DbCluster.Endpoint.Address
+
+  FunctionName:
+    Description: Lambda function name
+    Value: !Ref ApiFunction
+
+  LogGroupName:
+    Description: CloudWatch log group
+    Value: !Ref LogGroup

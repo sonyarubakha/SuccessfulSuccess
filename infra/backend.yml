@@ -24,6 +24,13 @@ Parameters:
     Description: >-
       Backend image in ECR, preferably pinned by digest.
 
+  ServerlessOriginDomain:
+    Type: String
+    Default: ""
+    Description: >-
+      Lambda Function URL hostname used as the CloudFront backend origin
+      during the serverless migration.
+
   ECSCpuArchitecture:
     Type: String
     Default: X86_64
@@ -376,10 +383,10 @@ Resources:
 
         Origins:
           - Id: backend-alb
-            DomainName: !GetAtt BackendLoadBalancer.DNSName
+            DomainName: !Ref ServerlessOriginDomain
             CustomOriginConfig:
-              HTTPPort: 80
-              OriginProtocolPolicy: http-only
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
 
         DefaultCacheBehavior:
           TargetOriginId: backend-alb
