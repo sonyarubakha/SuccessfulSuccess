@@ -40,13 +40,12 @@ AWS ?= aws
 
 AUTH_STACK ?= $(PROJECT_NAME)-auth
 APP_STACK ?= $(PROJECT_NAME)-backend
+SERVERLESS_STACK ?= $(PROJECT_NAME)-serverless-backend
 ECR_STACK ?= $(PROJECT_NAME)-ecr
 FRONTEND_STACK ?= $(PROJECT_NAME)-frontend
 IMAGE_TAG ?= $(shell git rev-parse HEAD)
-# ECS/Fargate CPU architecture. Keep the Docker build platform aligned with
-# the architecture declared in the ECS task definition.
-ECS_CPU_ARCH ?= X86_64
-IMAGE_PLATFORM = $(if $(filter ARM64,$(ECS_CPU_ARCH)),linux/arm64,linux/amd64)
+
+IMAGE_PLATFORM ?= linux/amd64
 # Every stack carries this tag, and CloudFormation copies it onto each resource
 # that supports tags, so Cost Explorer and Resource Groups can find the project.
 STACK_TAGS = --tags "PROJECT_NAME=$(PROJECT_NAME)"
@@ -205,33 +204,41 @@ aws-ecr: ## Create the ECR repository for the backend image
 		$(STACK_TAGS) \
 		--parameter-overrides "ProjectName=$(PROJECT_NAME)"
 
-aws-push: aws-ecr ## Build the backend container image and push it to ECR
+aws-push: ## Build the backend Lambda image and push it to ECR
 	$(require-aws-credentials)
 	@repo=$$($(call stack-output,$(ECR_STACK),RepositoryUri) | tr -d '[:space:]'); \
-		echo "Pushing $$repo:$(IMAGE_TAG) ($(IMAGE_PLATFORM))"; \
+		echo "Pushing Lambda image $$repo:$(IMAGE_TAG) ($(IMAGE_PLATFORM))"; \
 		$(AWS) ecr get-login-password | docker login --username AWS --password-stdin "$${repo%%/*}"; \
-		docker build --platform $(IMAGE_PLATFORM) --provenance=false \
-			-f backend/Dockerfile -t "$$repo:$(IMAGE_TAG)" ./backend; \
-		docker push "$$repo:$(IMAGE_TAG)"
+		docker buildx build \
+			--platform $(IMAGE_PLATFORM) \
+			--provenance=false \
+			-f backend/Dockerfile.lambda \
+			-t "$$repo:$(IMAGE_TAG)" \
+			--push \
+			./backend
 
-aws-deploy-backend: aws-push ## Deploy the backend to ECS/Fargate behind an ALB
+aws-deploy-backend: aws-ecr aws-push ## Deploy Lambda + Aurora and keep the compatibility CloudFront URL
 	$(require-aws-credentials)
 	$(require-db-password)
-	@pool=$$($(call stack-output,$(AUTH_STACK),UserPoolId) 2>/dev/null | tr -d '[:space:]'); \
+	@set -e; \
+		pool=$$($(call stack-output,$(AUTH_STACK),UserPoolId) 2>/dev/null | tr -d '[:space:]'); \
 		client=$$($(call stack-output,$(AUTH_STACK),UserPoolClientId) | tr -d '[:space:]'); \
 		issuer=$$($(call stack-output,$(AUTH_STACK),Issuer) | tr -d '[:space:]'); \
 		case "$$pool" in ""|None) echo "No user pool found — run: make aws-deploy-auth"; exit 1 ;; esac; \
 		jwks=$$(curl -fsS "$$issuer/.well-known/jwks.json" | base64 | tr -d '\n'); \
-		test -n "$$jwks" || { echo "Could not download $$issuer/.well-known/jwks.json"; exit 1; }; \
-		vpc=$$($(AWS) ec2 describe-vpcs --filters Name=isDefault,Values=true \
-			--query 'Vpcs[0].VpcId' --output text | tr -d '[:space:]'); \
-		test "$$vpc" != "None" -a -n "$$vpc" || { \
-			echo "No default VPC in $(AWS_REGION)"; exit 1; }; \
+		test -n "$$jwks" || { echo "Could not download Cognito JWKS"; exit 1; }; \
+		vpc=$$($(AWS) ec2 describe-vpcs \
+			--filters Name=isDefault,Values=true \
+			--query 'Vpcs[0].VpcId' \
+			--output text | tr -d '[:space:]'); \
+		test "$$vpc" != "None" -a -n "$$vpc" || { echo "No default VPC"; exit 1; }; \
 		subnets=$$($(AWS) ec2 describe-subnets \
 			--filters Name=vpc-id,Values=$$vpc Name=default-for-az,Values=true \
-			--query 'Subnets[].SubnetId' --output text | tr '[:space:]' ',' | sed 's/,*$$//'); \
+			--query 'Subnets[].SubnetId' \
+			--output text | tr '[:space:]' ',' | sed 's/,*$$//'); \
 		repo=$$($(call stack-output,$(ECR_STACK),RepositoryUri) | tr -d '[:space:]'); \
-		digest=$$($(AWS) ecr describe-images --repository-name "$${repo#*/}" \
+		digest=$$($(AWS) ecr describe-images \
+			--repository-name "$${repo#*/}" \
 			--image-ids imageTag=$(IMAGE_TAG) \
 			--query 'imageDetails[0].imageDigest' \
 			--output text | tr -d '[:space:]'); \
@@ -240,45 +247,100 @@ aws-deploy-backend: aws-push ## Deploy the backend to ECS/Fargate behind an ALB
 			cors=$$($(call stack-output,$(FRONTEND_STACK),AllowedOrigins) 2>/dev/null | tr -d '[:space:]'); \
 			case "$$cors" in ""|None) cors='*' ;; esac; \
 		fi; \
-		echo "vpc=$$vpc subnets=$$subnets image=$$repo@$$digest cors=$$cors"; \
-		$(call wait-stack-idle,$(APP_STACK)); \
-		$(call clear-failed-create,$(APP_STACK)); \
+		echo "Deploying serverless backend: $$repo@$$digest"; \
+		$(call wait-stack-idle,$(SERVERLESS_STACK)); \
+		$(call clear-failed-create,$(SERVERLESS_STACK)); \
 		$(AWS) cloudformation deploy \
-			--stack-name $(APP_STACK) \
-			--template-file infra/backend.yml \
+			--stack-name $(SERVERLESS_STACK) \
+			--template-file infra/backend-serverless.yml \
 			--capabilities CAPABILITY_IAM \
 			--no-fail-on-empty-changeset \
-			$(STACK_TAGS) \
+			--tags "PROJECT_NAME=$(PROJECT_NAME)-serverless" \
 			--parameter-overrides \
-				"ProjectName=$(PROJECT_NAME)" \
+				"ProjectName=$(PROJECT_NAME)-serverless" \
 				"VpcId=$$vpc" \
 				"SubnetIds=$$subnets" \
 				"ImageUri=$$repo@$$digest" \
-				"ECSCpuArchitecture=$(ECS_CPU_ARCH)" \
+				"Architecture=x86_64" \
 				"DbPassword=$(AWS_DB_PASSWORD)" \
 				"AppTimezone=$(APP_TIMEZONE)" \
 				"CorsOrigins=$$cors" \
 				"CognitoUserPoolId=$$pool" \
 				"CognitoClientId=$$client" \
-				"CognitoJwks=$$jwks"
+				"CognitoJwks=$$jwks"; \
+		origin=$$($(call stack-output,$(SERVERLESS_STACK),FunctionUrlDomain) | tr -d '[:space:]'); \
+		$(AWS) cloudformation deploy \
+			--stack-name $(APP_STACK) \
+			--template-file infra/backend.yml \
+			--no-fail-on-empty-changeset \
+			--tags "PROJECT_NAME=$(PROJECT_NAME)" \
+			--parameter-overrides \
+				"ProjectName=$(PROJECT_NAME)" \
+				"ServerlessOriginDomain=$$origin"
+
+	@$(MAKE) --no-print-directory aws-migrate
 	@$(MAKE) --no-print-directory aws-url
 
-aws-migrate: ## Explain migration behavior for ECS
-	@echo "Migrations run automatically when the ECS task starts (RUN_MIGRATIONS_ON_START=true)."
-aws-url: ## Print the deployed API URL
+aws-release-backend: aws-push ## Release new application code to the existing Lambda
+	$(require-aws-credentials)
+	@set -e; \
+		repo=$$($(call stack-output,$(ECR_STACK),RepositoryUri) | tr -d '[:space:]'); \
+		digest=$$($(AWS) ecr describe-images \
+			--repository-name "$${repo#*/}" \
+			--image-ids imageTag=$(IMAGE_TAG) \
+			--query 'imageDetails[0].imageDigest' \
+			--output text | tr -d '[:space:]'); \
+		fn=$$($(call stack-output,$(SERVERLESS_STACK),FunctionName) | tr -d '[:space:]'); \
+		echo "Updating $$fn to $$repo@$$digest"; \
+		$(AWS) lambda update-function-code \
+			--function-name "$$fn" \
+			--image-uri "$$repo@$$digest" \
+			>/dev/null; \
+		$(AWS) lambda wait function-updated \
+			--function-name "$$fn"
+
+	@$(MAKE) --no-print-directory aws-migrate
+
+	@set -e; \
+		api=$$($(call stack-output,$(APP_STACK),ApiUrl) | tr -d '[:space:]'); \
+		echo "Checking $$api/health"; \
+		curl -fsS "$$api/health"; \
+		echo
+
+aws-migrate: ## Apply Alembic migrations through Lambda
+	@set -e; \
+		fn=$$($(call stack-output,$(SERVERLESS_STACK),FunctionName) | tr -d '[:space:]'); \
+		echo "Migrating database through $$fn"; \
+		tmp=$$(mktemp); \
+		err=$$($(AWS) lambda invoke \
+			--function-name "$$fn" \
+			--cli-binary-format raw-in-base64-out \
+			--payload '{"action":"migrate"}' \
+			--query FunctionError \
+			--output text \
+			"$$tmp" | tr -d '[:space:]'); \
+		cat "$$tmp"; echo; \
+		rm -f "$$tmp"; \
+		test "$$err" = "None" || { echo "Migration failed: $$err"; exit 1; }
+
+aws-url: ## Print the stable public backend URL
 	@$(call stack-output,$(APP_STACK),ApiUrl)
 
-aws-status: ## Show the ECS service status
-	@cluster=$$($(call stack-output,$(APP_STACK),ECSClusterName) | tr -d '[:space:]'); \
-		service=$$($(call stack-output,$(APP_STACK),ECSServiceName) | tr -d '[:space:]'); \
-		$(AWS) ecs describe-services \
-			--cluster "$$cluster" \
-			--services "$$service" \
-			--query 'services[0].{status:status,desired:desiredCount,running:runningCount,pending:pendingCount}' \
+aws-status: ## Show serverless backend state
+	@$(AWS) cloudformation describe-stacks \
+		--stack-name $(SERVERLESS_STACK) \
+		--query 'Stacks[0].Outputs' \
+		--output table
+	@fn=$$($(call stack-output,$(SERVERLESS_STACK),FunctionName) | tr -d '[:space:]'); \
+		$(AWS) lambda get-function-configuration \
+			--function-name "$$fn" \
+			--query '{state:State,lastUpdate:LastUpdateStatus,arch:Architectures[0],memory:MemorySize}' \
 			--output table
+	@echo "Public API:"
+	@$(MAKE) --no-print-directory aws-url
 
-aws-logs: ## Follow the ECS backend logs
-	@log=$$($(call stack-output,$(APP_STACK),LogGroupName) | tr -d '[:space:]'); \
+aws-logs: ## Follow Lambda backend logs
+	@log=$$($(call stack-output,$(SERVERLESS_STACK),LogGroupName) | tr -d '[:space:]'); \
 		$(AWS) logs tail "$$log" --follow
 
 aws-frontend-cert: ## Request and validate the HTTPS certificate for AWS_FRONTEND_DOMAIN (in us-east-1)

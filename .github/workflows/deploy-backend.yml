@@ -11,9 +11,6 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  PROJECT_NAME: successfulsuccess
-  BACKEND_STACK: successfulsuccess-backend
-  ECR_REPOSITORY: successfulsuccess-backend
 
 jobs:
   test:
@@ -67,7 +64,7 @@ jobs:
         run: uv run --no-sync pytest
 
   deploy:
-    name: Build and deploy backend
+    name: Deploy Lambda backend
     runs-on: ubuntu-latest
     needs: test
 
@@ -75,125 +72,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      # Step 8 will provide AWS_ROLE_ARN through GitHub repository variables.
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Build and push image to ECR
-        id: image
-        shell: bash
-        run: |
-          AWS_ACCOUNT_ID=$(aws sts get-caller-identity \
-            --query Account \
-            --output text)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-          ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-          IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${GITHUB_SHA}"
-
-          aws ecr get-login-password --region "$AWS_REGION" \
-            | docker login \
-                --username AWS \
-                --password-stdin "$ECR_REGISTRY"
-
-          docker build \
-            --platform linux/amd64 \
-            -f backend/Dockerfile \
-            -t "$IMAGE_URI" \
-            backend
-
-          docker push "$IMAGE_URI"
-
-          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
-
-      - name: Read ECS service from CloudFormation
-        id: ecs
-        shell: bash
-        run: |
-          CLUSTER=$(aws cloudformation describe-stacks \
-            --stack-name "$BACKEND_STACK" \
-            --query "Stacks[0].Outputs[?OutputKey=='ECSClusterName'].OutputValue | [0]" \
-            --output text)
-
-          SERVICE=$(aws cloudformation describe-stacks \
-            --stack-name "$BACKEND_STACK" \
-            --query "Stacks[0].Outputs[?OutputKey=='ECSServiceName'].OutputValue | [0]" \
-            --output text)
-
-          echo "cluster=$CLUSTER" >> "$GITHUB_OUTPUT"
-          echo "service=$SERVICE" >> "$GITHUB_OUTPUT"
-
-      - name: Create new ECS task definition revision
-        id: task
-        env:
-          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
-          ECS_CLUSTER: ${{ steps.ecs.outputs.cluster }}
-          ECS_SERVICE: ${{ steps.ecs.outputs.service }}
-        shell: bash
-        run: |
-          CURRENT_TASK_DEFINITION=$(aws ecs describe-services \
-            --cluster "$ECS_CLUSTER" \
-            --services "$ECS_SERVICE" \
-            --query "services[0].taskDefinition" \
-            --output text)
-
-          aws ecs describe-task-definition \
-            --task-definition "$CURRENT_TASK_DEFINITION" \
-            --query "taskDefinition" \
-            --output json > task-definition.json
-
-          CONTAINER_NAME=$(jq -r '.containerDefinitions[0].name' task-definition.json)
-
-          jq \
-            --arg IMAGE "$IMAGE_URI" \
-            --arg CONTAINER "$CONTAINER_NAME" \
-            '
-            .containerDefinitions |= map(
-              if .name == $CONTAINER
-              then .image = $IMAGE
-              else .
-              end
-            )
-            | del(
-                .taskDefinitionArn,
-                .revision,
-                .status,
-                .requiresAttributes,
-                .compatibilities,
-                .registeredAt,
-                .registeredBy
-              )
-            ' \
-            task-definition.json > new-task-definition.json
-
-          NEW_TASK_DEFINITION=$(aws ecs register-task-definition \
-            --cli-input-json file://new-task-definition.json \
-            --query "taskDefinition.taskDefinitionArn" \
-            --output text)
-
-          echo "task_definition=$NEW_TASK_DEFINITION" >> "$GITHUB_OUTPUT"
-
-      - name: Update ECS service
-        env:
-          ECS_CLUSTER: ${{ steps.ecs.outputs.cluster }}
-          ECS_SERVICE: ${{ steps.ecs.outputs.service }}
-          TASK_DEFINITION: ${{ steps.task.outputs.task_definition }}
-        shell: bash
-        run: |
-          aws ecs update-service \
-            --cluster "$ECS_CLUSTER" \
-            --service "$ECS_SERVICE" \
-            --task-definition "$TASK_DEFINITION"
-
-          aws ecs wait services-stable \
-            --cluster "$ECS_CLUSTER" \
-            --services "$ECS_SERVICE"
-
-      - name: Show deployed revision
-        env:
-          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
-        run: |
-          echo "Successfully deployed:"
-          echo "$IMAGE_URI"
+      - name: Build and release Lambda
+        run: make aws-release-backend IMAGE_TAG="$GITHUB_SHA"
