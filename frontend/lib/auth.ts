@@ -1,62 +1,73 @@
-import { Amplify } from "aws-amplify"
-import { fetchAuthSession } from "aws-amplify/auth"
-// Completes Google sign-in when Cognito redirects back to the app.
-import "aws-amplify/auth/enable-oauth-listener"
+import { UserManager, WebStorageStateStore } from "oidc-client-ts"
 
 export const authConfig = {
   userPoolId: process.env.NEXT_PUBLIC_COGNITO_USER_POOL_ID ?? "",
   clientId: process.env.NEXT_PUBLIC_COGNITO_CLIENT_ID ?? "",
-  // Cognito's OAuth domain, e.g. <prefix>.auth.us-east-1.amazoncognito.com
   domain: process.env.NEXT_PUBLIC_COGNITO_DOMAIN ?? "",
-  googleEnabled: process.env.NEXT_PUBLIC_COGNITO_GOOGLE_ENABLED === "true",
 }
 
-export const isAuthConfigured = Boolean(authConfig.userPoolId && authConfig.clientId)
+export const isAuthConfigured = Boolean(
+  authConfig.userPoolId && authConfig.clientId && authConfig.domain,
+)
 
-let configured = false
+export const authority = authConfig.userPoolId
+  ? `https://cognito-idp.us-east-1.amazonaws.com/${authConfig.userPoolId}`
+  : ""
 
-/** Idempotent; browser only, because the OAuth redirect URLs use the page's origin. */
-export function configureAuth() {
-  if (configured || !isAuthConfigured || typeof window === "undefined") return
-  const home = `${window.location.origin}/`
-  Amplify.configure({
-    Auth: {
-      Cognito: {
-        userPoolId: authConfig.userPoolId,
-        userPoolClientId: authConfig.clientId,
-        loginWith: {
-          email: true,
-          ...(authConfig.domain
-            ? {
-                oauth: {
-                  domain: authConfig.domain,
-                  scopes: ["openid", "email", "profile"],
-                  redirectSignIn: [home],
-                  redirectSignOut: [home],
-                  responseType: "code" as const,
-                },
-              }
-            : {}),
-        },
-      },
-    },
-  })
-  configured = true
-}
+let userManager: UserManager | null = null
 
-/** The current access token, refreshed by Amplify when it is about to expire. */
-export async function getAccessToken(): Promise<string | null> {
-  if (!isAuthConfigured) return null
-  configureAuth()
-  try {
-    const session = await fetchAuthSession()
-    return session.tokens?.accessToken?.toString() ?? null
-  } catch {
+export function getUserManager(): UserManager | null {
+  if (typeof window === "undefined" || !isAuthConfigured) {
     return null
   }
+
+  if (!userManager) {
+    userManager = new UserManager({
+      authority,
+      client_id: authConfig.clientId,
+      redirect_uri: `${window.location.origin}/`,
+      response_type: "code",
+      scope: "openid email profile",
+      userStore: new WebStorageStateStore({
+        store: window.sessionStorage,
+      }),
+    })
+  }
+
+  return userManager
 }
 
-/** Cognito errors carry a readable message; fall back for anything else. */
-export function authErrorMessage(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : "Something went wrong."
+export async function getAccessToken(): Promise<string | null> {
+  const manager = getUserManager()
+  if (!manager) return null
+
+  const user = await manager.getUser()
+
+  if (!user || user.expired) {
+    return null
+  }
+
+  return user.access_token
+}
+
+export async function signOutFromCognito(): Promise<void> {
+  const manager = getUserManager()
+
+  if (manager) {
+    await manager.removeUser()
+  }
+
+  if (typeof window === "undefined") return
+
+  if (!authConfig.domain || !authConfig.clientId) {
+    return
+  }
+
+  const logoutUri = `${window.location.origin}/`
+  const params = new URLSearchParams({
+    client_id: authConfig.clientId,
+    logout_uri: logoutUri,
+  })
+
+  window.location.assign(`https://${authConfig.domain}/logout?${params.toString()}`)
 }
