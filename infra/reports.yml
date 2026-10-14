@@ -187,6 +187,47 @@ Resources:
       BatchSize: 1
       Enabled: true
 
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - scheduler.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: SendWeeklyReportRequest
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt ReportQueue.Arn
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  WeeklyReportSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${ProjectName}-weekly-report"
+      Description: Request the previous week's meeting report every Monday morning
+      ScheduleExpression: "cron(0 8 ? * MON *)"
+      ScheduleExpressionTimezone: !Ref AppTimezone
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      State: ENABLED
+      Target:
+        Arn: !GetAtt ReportQueue.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"week":null,"source":"schedule"}'
+
 Outputs:
   ReportBucketName:
     Description: S3 bucket containing generated reports
@@ -211,3 +252,7 @@ Outputs:
   BuilderLogGroupName:
     Description: CloudWatch log group for the builder
     Value: !Ref BuilderLogGroup
+
+  WeeklyReportScheduleName:
+    Description: EventBridge Scheduler weekly report schedule
+    Value: !Ref WeeklyReportSchedule
