@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
-from app.db import SessionFactory
+from app.db import SessionFactory, engine
 from app.models import Meeting
 from app.models.user import User
 
@@ -266,4 +266,14 @@ async def _build_weekly_report(week: str) -> bytes:
 
 def build_weekly_report(week: str) -> bytes:
     """Query one ISO week and return its deterministic CSV representation."""
-    return asyncio.run(_build_weekly_report(week))
+
+    async def run() -> bytes:
+        try:
+            return await _build_weekly_report(week)
+        finally:
+            # asyncio.run() closes its event loop after every invocation.
+            # Dispose pooled asyncpg connections first so a warm Lambda
+            # invocation never reuses a connection bound to the old loop.
+            await engine.dispose()
+
+    return asyncio.run(run())

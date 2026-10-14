@@ -102,7 +102,7 @@ define require-db-password
 endef
 
 .PHONY: help up up-build down down-v logs ps migrate revision seed test lint fmt shell-backend psql \
-        aws-whoami aws-deploy aws-deploy-auth aws-auth-env aws-ecr aws-push aws-deploy-backend aws-deploy-reports aws-migrate aws-url aws-status aws-logs \
+        aws-whoami aws-deploy aws-deploy-auth aws-auth-env aws-ecr aws-push aws-deploy-backend aws-deploy-reports report-now aws-migrate aws-url aws-status aws-logs \
         aws-frontend-cert aws-deploy-frontend aws-frontend-url aws-destroy
 		deploy-backend deploy-frontend
 help:
@@ -337,6 +337,15 @@ aws-deploy-reports: aws-ecr aws-push ## Deploy weekly report builder, SQS and S3
 				"DatabaseEndpoint=$$db" \
 				"DbPassword=$(AWS_DB_PASSWORD)" \
 				"AppTimezone=$(APP_TIMEZONE)"
+
+report-now: ## Request an on-demand weekly report: make report-now WEEK=2026-W40
+	$(require-aws-credentials)
+	@test -n "$(WEEK)" || { echo "Usage: make report-now WEEK=YYYY-Www"; exit 1; }
+	@queue=$$($(call stack-output,$(REPORTS_STACK),ReportQueueUrl) | tr -d '[:space:]'); \
+		test -n "$$queue" -a "$$queue" != "None" || { echo "Report queue not found — run: make aws-deploy-reports"; exit 1; }; \
+		$(AWS) sqs send-message \
+			--queue-url "$$queue" \
+			--message-body '{"week":"$(WEEK)","source":"manual"}'
 
 aws-release-backend: aws-push ## Release new application code to the existing Lambda
 	$(require-aws-credentials)
