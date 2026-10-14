@@ -41,6 +41,7 @@ AWS ?= aws
 AUTH_STACK ?= $(PROJECT_NAME)-auth
 APP_STACK ?= $(PROJECT_NAME)-backend
 SERVERLESS_STACK ?= $(PROJECT_NAME)-serverless-backend
+REPORTS_STACK ?= $(PROJECT_NAME)-reports
 ECR_STACK ?= $(PROJECT_NAME)-ecr
 FRONTEND_STACK ?= $(PROJECT_NAME)-frontend
 IMAGE_TAG ?= $(shell git rev-parse HEAD)
@@ -101,7 +102,7 @@ define require-db-password
 endef
 
 .PHONY: help up up-build down down-v logs ps migrate revision seed test lint fmt shell-backend psql \
-        aws-whoami aws-deploy aws-deploy-auth aws-auth-env aws-ecr aws-push aws-deploy-backend aws-migrate aws-url aws-status aws-logs \
+        aws-whoami aws-deploy aws-deploy-auth aws-auth-env aws-ecr aws-push aws-deploy-backend aws-deploy-reports aws-migrate aws-url aws-status aws-logs \
         aws-frontend-cert aws-deploy-frontend aws-frontend-url aws-destroy
 		deploy-backend deploy-frontend
 help:
@@ -280,6 +281,62 @@ aws-deploy-backend: aws-ecr aws-push ## Deploy Lambda + Aurora and keep the comp
 
 	@$(MAKE) --no-print-directory aws-migrate
 	@$(MAKE) --no-print-directory aws-url
+
+aws-deploy-reports: aws-ecr aws-push ## Deploy weekly report builder, SQS and S3
+	$(require-aws-credentials)
+	$(require-db-password)
+	@set -e; \
+		vpc=$$($(AWS) ec2 describe-vpcs \
+			--filters Name=isDefault,Values=true \
+			--query 'Vpcs[0].VpcId' \
+			--output text | tr -d '[:space:]'); \
+		test "$$vpc" != "None" -a -n "$$vpc" || { echo "No default VPC"; exit 1; }; \
+		subnets=$$($(AWS) ec2 describe-subnets \
+			--filters Name=vpc-id,Values=$$vpc Name=default-for-az,Values=true \
+			--query 'Subnets[].SubnetId' \
+			--output text | tr '[:space:]' ',' | sed 's/,*$$//'); \
+		routes=$$($(AWS) ec2 describe-route-tables \
+			--filters Name=vpc-id,Values=$$vpc \
+			--query 'RouteTables[].RouteTableId' \
+			--output text | tr '[:space:]' ',' | sed 's/,*$$//'); \
+		sg=$$($(AWS) cloudformation describe-stack-resource \
+			--stack-name $(SERVERLESS_STACK) \
+			--logical-resource-id FunctionSecurityGroup \
+			--query 'StackResourceDetail.PhysicalResourceId' \
+			--output text | tr -d '[:space:]'); \
+		db=$$($(call stack-output,$(SERVERLESS_STACK),DatabaseEndpoint) \
+			2>/dev/null | tr -d '[:space:]'); \
+		repo=$$($(call stack-output,$(ECR_STACK),RepositoryUri) \
+			| tr -d '[:space:]'); \
+		digest=$$($(AWS) ecr describe-images \
+			--repository-name "$${repo#*/}" \
+			--image-ids imageTag=$(IMAGE_TAG) \
+			--query 'imageDetails[0].imageDigest' \
+			--output text | tr -d '[:space:]'); \
+		test -n "$$subnets" || { echo "No default subnets found"; exit 1; }; \
+		test -n "$$routes" || { echo "No route tables found"; exit 1; }; \
+		test "$$sg" != "None" -a -n "$$sg" || { echo "Backend security group not found"; exit 1; }; \
+		test "$$db" != "None" -a -n "$$db" || { echo "Database endpoint not found"; exit 1; }; \
+		test "$$digest" != "None" -a -n "$$digest" || { echo "ECR image digest not found"; exit 1; }; \
+		echo "Deploying reports stack with $$repo@$$digest"; \
+		$(call wait-stack-idle,$(REPORTS_STACK)); \
+		$(call clear-failed-create,$(REPORTS_STACK)); \
+		$(AWS) cloudformation deploy \
+			--stack-name $(REPORTS_STACK) \
+			--template-file infra/reports.yml \
+			--capabilities CAPABILITY_IAM \
+			--no-fail-on-empty-changeset \
+			--tags "PROJECT_NAME=$(PROJECT_NAME)" \
+			--parameter-overrides \
+				"ProjectName=$(PROJECT_NAME)" \
+				"VpcId=$$vpc" \
+				"SubnetIds=$$subnets" \
+				"RouteTableIds=$$routes" \
+				"FunctionSecurityGroupId=$$sg" \
+				"ImageUri=$$repo@$$digest" \
+				"DatabaseEndpoint=$$db" \
+				"DbPassword=$(AWS_DB_PASSWORD)" \
+				"AppTimezone=$(APP_TIMEZONE)"
 
 aws-release-backend: aws-push ## Release new application code to the existing Lambda
 	$(require-aws-credentials)

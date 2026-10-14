@@ -1,0 +1,213 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Weekly meeting reports: SQS-triggered builder Lambda writes deterministic
+  CSV reports to a private S3 bucket.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: successfulsuccess
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+
+  RouteTableIds:
+    Type: CommaDelimitedList
+
+  FunctionSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+
+  ImageUri:
+    Type: String
+    Description: Backend Lambda container image pinned by digest.
+
+  DatabaseEndpoint:
+    Type: String
+
+  DbName:
+    Type: String
+    Default: meetings
+
+  DbUsername:
+    Type: String
+    Default: app
+
+  DbPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 41
+    AllowedPattern: "[a-zA-Z0-9_-]+"
+
+  AppTimezone:
+    Type: String
+    Default: Europe/Kyiv
+
+Resources:
+  ReportBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-reports-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldReports
+            Status: Enabled
+            ExpirationInDays: 90
+            Prefix: reports/
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  ReportDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-report-dlq"
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  ReportQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-report-queue"
+      SqsManagedSseEnabled: true
+      VisibilityTimeout: 360
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ReportDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Gateway
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      RouteTableIds: !Ref RouteTableIds
+
+  BuilderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: ReportBuilderAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub "${ReportBucket.Arn}/reports/*"
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt ReportQueue.Arn
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  BuilderLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ProjectName}-report-builder"
+      RetentionInDays: 7
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  BuilderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-report-builder"
+      Description: Builds weekly meeting CSV reports and stores them in S3
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ImageUri
+      ImageConfig:
+        Command:
+          - app.reports.lambda_handler.handler
+      Architectures:
+        - x86_64
+      Role: !GetAtt BuilderRole.Arn
+      MemorySize: 512
+      Timeout: 60
+      LoggingConfig:
+        LogGroup: !Ref BuilderLogGroup
+      VpcConfig:
+        SubnetIds: !Ref SubnetIds
+        SecurityGroupIds:
+          - !Ref FunctionSecurityGroupId
+      Environment:
+        Variables:
+          DATABASE_URL: !Sub
+            - "postgresql+asyncpg://${DbUsername}:${DbPassword}@${Endpoint}:5432/${DbName}"
+            - Endpoint: !Ref DatabaseEndpoint
+          APP_TIMEZONE: !Ref AppTimezone
+          LOG_LEVEL: INFO
+          REPORT_BUCKET: !Ref ReportBucket
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  QueueToBuilder:
+    Type: AWS::Lambda::EventSourceMapping
+    DependsOn:
+      - BuilderRole
+    Properties:
+      EventSourceArn: !GetAtt ReportQueue.Arn
+      FunctionName: !Ref BuilderFunction
+      BatchSize: 1
+      Enabled: true
+
+Outputs:
+  ReportBucketName:
+    Description: S3 bucket containing generated reports
+    Value: !Ref ReportBucket
+
+  ReportQueueUrl:
+    Description: SQS queue URL for report requests
+    Value: !Ref ReportQueue
+
+  ReportQueueArn:
+    Description: SQS queue ARN
+    Value: !GetAtt ReportQueue.Arn
+
+  ReportDeadLetterQueueUrl:
+    Description: Dead-letter queue URL
+    Value: !Ref ReportDeadLetterQueue
+
+  BuilderFunctionName:
+    Description: Weekly report builder Lambda
+    Value: !Ref BuilderFunction
+
+  BuilderLogGroupName:
+    Description: CloudWatch log group for the builder
+    Value: !Ref BuilderLogGroup
