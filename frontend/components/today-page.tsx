@@ -8,6 +8,7 @@ import { MeetingDetailsDialog } from "@/components/meeting-details-dialog"
 import { MeetingFormDialog } from "@/components/meeting-form-dialog"
 import { MeetingList } from "@/components/meeting-list"
 import { useMeetings } from "@/hooks/use-meetings"
+import { requestCurrentReport } from "@/lib/api"
 import { formatLongDate } from "@/lib/datetime"
 import type { Meeting } from "@/lib/types"
 
@@ -25,6 +26,9 @@ export function TodayPage({ initialDialogOpen = false }: { initialDialogOpen?: b
   // Kept after closing so dialogs keep their content during the close animation.
   const [selected, setSelected] = useState<Meeting>()
   const [editing, setEditing] = useState<Meeting>()
+  const [reportPending, setReportPending] = useState(false)
+  const [reportMessage, setReportMessage] = useState<string>()
+  const [reportFailed, setReportFailed] = useState(false)
   const { data } = useMeetings()
 
   const count = data?.items.length ?? 0
@@ -43,6 +47,22 @@ export function TodayPage({ initialDialogOpen = false }: { initialDialogOpen?: b
   const onEdit = (meeting: Meeting) => open({ kind: "form", meeting })
   const onDelete = (meeting: Meeting) => open({ kind: "delete", meeting })
 
+  const onRequestReport = async () => {
+    setReportPending(true)
+    setReportMessage(undefined)
+    setReportFailed(false)
+
+    try {
+      const result = await requestCurrentReport()
+      setReportMessage(`Report ${result.week} was queued and will arrive by email.`)
+    } catch (error) {
+      setReportFailed(true)
+      setReportMessage(error instanceof Error ? error.message : "Could not request the report.")
+    } finally {
+      setReportPending(false)
+    }
+  }
+
   return (
     <>
       <AppHeader onCreate={onCreate} />
@@ -57,11 +77,34 @@ export function TodayPage({ initialDialogOpen = false }: { initialDialogOpen?: b
               <p className="text-muted-foreground mt-2 text-base">{formatLongDate(data.date)}</p>
             ) : null}
           </div>
-          {data ? (
-            <span className="tint-violet inline-flex items-center rounded-full px-3.5 py-1.5 text-sm font-semibold tabular-nums">
-              {count} {count === 1 ? "meeting" : "meetings"}
-            </span>
-          ) : null}
+          <div className="flex flex-col items-end gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={onRequestReport}
+                disabled={reportPending}
+                className="border-border bg-background hover:bg-muted inline-flex h-9 items-center justify-center rounded-md border px-3 text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50"
+              >
+                {reportPending ? "Sending..." : "Send me this week's report"}
+              </button>
+
+              {data ? (
+                <span className="tint-violet inline-flex items-center rounded-full px-3.5 py-1.5 text-sm font-semibold tabular-nums">
+                  {count} {count === 1 ? "meeting" : "meetings"}
+                </span>
+              ) : null}
+            </div>
+
+            {reportMessage ? (
+              <p
+                className={
+                  reportFailed ? "text-destructive text-sm" : "text-muted-foreground text-sm"
+                }
+              >
+                {reportMessage}
+              </p>
+            ) : null}
+          </div>
         </div>
 
         <MeetingList onCreate={onCreate} onView={onView} onEdit={onEdit} onDelete={onDelete} />

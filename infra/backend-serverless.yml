@@ -99,6 +99,10 @@ Parameters:
     Type: String
     Description: Base64-encoded Cognito JWKS document.
 
+  ReportQueueName:
+    Type: String
+    Default: successfulsuccess-report-queue
+
 Conditions:
   HasDbEngineVersion: !Not [!Equals [!Ref DbEngineVersion, ""]]
   HasMaxConcurrency: !Not [!Equals [!Ref MaxConcurrency, 0]]
@@ -198,6 +202,15 @@ Resources:
               - sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: ReportRequestAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !Sub "arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${ReportQueueName}"
       Tags:
         - Key: PROJECT_NAME
           Value: !Ref ProjectName
@@ -249,6 +262,7 @@ Resources:
           COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
           COGNITO_CLIENT_ID: !Ref CognitoClientId
           COGNITO_JWKS: !Ref CognitoJwks
+          REPORT_QUEUE_URL: !Sub "https://sqs.${AWS::Region}.${AWS::URLSuffix}/${AWS::AccountId}/${ReportQueueName}"
       Tags:
         - Key: PROJECT_NAME
           Value: !Ref ProjectName

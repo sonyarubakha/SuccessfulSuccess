@@ -108,3 +108,9 @@ export function syncMe(idToken: string) {
     body: JSON.stringify({ id_token: idToken }),
   })
 }
+
+export function requestCurrentReport() {
+  return request<{ status: string; week: string }>("/api/v1/reports/current", {
+    method: "POST",
+  })
+}

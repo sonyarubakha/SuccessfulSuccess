@@ -121,6 +121,37 @@ Resources:
       ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
       RouteTableIds: !Ref RouteTableIds
 
+  SqsEndpointSelfIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref FunctionSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId: !Ref FunctionSecurityGroupId
+      Description: Lambda functions to SQS interface endpoint
+
+  SqsInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    DependsOn: SqsEndpointSelfIngress
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.sqs"
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Select [0, !Ref SubnetIds]
+      SecurityGroupIds:
+        - !Ref FunctionSecurityGroupId
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action:
+              - sqs:SendMessage
+            Resource: !GetAtt ReportQueue.Arn
+
   BuilderRole:
     Type: AWS::IAM::Role
     Properties:

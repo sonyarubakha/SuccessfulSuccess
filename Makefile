@@ -268,7 +268,8 @@ aws-deploy-backend: aws-ecr aws-push ## Deploy Lambda + Aurora and keep the comp
 				"CorsOrigins=$$cors" \
 				"CognitoUserPoolId=$$pool" \
 				"CognitoClientId=$$client" \
-				"CognitoJwks=$$jwks"; \
+				"CognitoJwks=$$jwks" \
+                            "ReportQueueName=$(PROJECT_NAME)-report-queue"; \
 		origin=$$($(call stack-output,$(SERVERLESS_STACK),FunctionUrlDomain) | tr -d '[:space:]'); \
 		$(AWS) cloudformation deploy \
 			--stack-name $(APP_STACK) \
