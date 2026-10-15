@@ -285,6 +285,8 @@ aws-deploy-backend: aws-ecr aws-push ## Deploy Lambda + Aurora and keep the comp
 aws-deploy-reports: aws-ecr aws-push ## Deploy weekly report builder, SQS and S3
 	$(require-aws-credentials)
 	$(require-db-password)
+	@test -n "$(REPORT_DOMAIN)" || { echo "REPORT_DOMAIN is empty — set it in .env"; exit 1; }
+	@test -n "$(REPORT_RECIPIENTS)" || { echo "REPORT_RECIPIENTS is empty — set it in .env"; exit 1; }
 	@set -e; \
 		vpc=$$($(AWS) ec2 describe-vpcs \
 			--filters Name=isDefault,Values=true \
@@ -336,7 +338,9 @@ aws-deploy-reports: aws-ecr aws-push ## Deploy weekly report builder, SQS and S3
 				"ImageUri=$$repo@$$digest" \
 				"DatabaseEndpoint=$$db" \
 				"DbPassword=$(AWS_DB_PASSWORD)" \
-				"AppTimezone=$(APP_TIMEZONE)"
+				"AppTimezone=$(APP_TIMEZONE)" \
+				"ReportDomain=$(REPORT_DOMAIN)" \
+				"ReportRecipients=$(REPORT_RECIPIENTS)"
 
 report-now: ## Request an on-demand weekly report: make report-now WEEK=2026-W40
 	$(require-aws-credentials)

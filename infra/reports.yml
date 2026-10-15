@@ -46,9 +46,18 @@ Parameters:
     Type: String
     Default: Europe/Kyiv
 
+  ReportDomain:
+    Type: String
+    Description: Domain verified in Amazon SES for report email sending.
+
+  ReportRecipients:
+    Type: String
+    Description: Comma-separated email addresses that receive weekly reports.
+
 Resources:
   ReportBucket:
     Type: AWS::S3::Bucket
+    DependsOn: MailerInvokePermission
     Properties:
       BucketName: !Sub "${ProjectName}-reports-${AWS::AccountId}"
       BucketEncryption:
@@ -66,6 +75,17 @@ Resources:
             Status: Enabled
             ExpirationInDays: 90
             Prefix: reports/
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Function: !GetAtt MailerFunction.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: reports/
+                  - Name: suffix
+                    Value: .csv
       Tags:
         - Key: PROJECT_NAME
           Value: !Ref ProjectName
@@ -228,6 +248,87 @@ Resources:
         RoleArn: !GetAtt SchedulerRole.Arn
         Input: '{"week":null,"source":"schedule"}'
 
+  MailerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ReportMailerAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${ProjectName}-reports-${AWS::AccountId}/reports/*"
+              - Effect: Allow
+                Action:
+                  - ses:SendRawEmail
+                Resource: "*"
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  MailerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ProjectName}-report-mailer"
+      RetentionInDays: 7
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  MailerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-report-mailer"
+      Description: Emails generated weekly meeting CSV reports
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ImageUri
+      ImageConfig:
+        Command:
+          - app.reports.mailer_handler.handler
+      Architectures:
+        - x86_64
+      Role: !GetAtt MailerRole.Arn
+      MemorySize: 256
+      Timeout: 30
+      LoggingConfig:
+        LogGroup: !Ref MailerLogGroup
+      Environment:
+        Variables:
+          LOG_LEVEL: INFO
+          REPORT_SENDER: !Sub "reports@${ReportDomain}"
+          REPORT_RECIPIENTS: !Ref ReportRecipients
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  MailerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MailerFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub "arn:${AWS::Partition}:s3:::${ProjectName}-reports-${AWS::AccountId}"
+
+  ReportEmailIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !Ref ReportDomain
+
 Outputs:
   ReportBucketName:
     Description: S3 bucket containing generated reports
@@ -256,3 +357,39 @@ Outputs:
   WeeklyReportScheduleName:
     Description: EventBridge Scheduler weekly report schedule
     Value: !Ref WeeklyReportSchedule
+
+  ReportDomain:
+    Description: SES report sending domain
+    Value: !Ref ReportEmailIdentity
+
+  DkimName1:
+    Description: First SES DKIM CNAME name
+    Value: !GetAtt ReportEmailIdentity.DkimDNSTokenName1
+
+  DkimValue1:
+    Description: First SES DKIM CNAME value
+    Value: !GetAtt ReportEmailIdentity.DkimDNSTokenValue1
+
+  DkimName2:
+    Description: Second SES DKIM CNAME name
+    Value: !GetAtt ReportEmailIdentity.DkimDNSTokenName2
+
+  DkimValue2:
+    Description: Second SES DKIM CNAME value
+    Value: !GetAtt ReportEmailIdentity.DkimDNSTokenValue2
+
+  DkimName3:
+    Description: Third SES DKIM CNAME name
+    Value: !GetAtt ReportEmailIdentity.DkimDNSTokenName3
+
+  DkimValue3:
+    Description: Third SES DKIM CNAME value
+    Value: !GetAtt ReportEmailIdentity.DkimDNSTokenValue3
+
+  MailerFunctionName:
+    Description: S3-triggered report mailer Lambda
+    Value: !Ref MailerFunction
+
+  MailerLogGroupName:
+    Description: CloudWatch log group for the mailer
+    Value: !Ref MailerLogGroup
