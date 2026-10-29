@@ -1,0 +1,1 @@
+{"timestamp":"2026-10-29T21:15:18.497Z","request_id":"547f9c61-a932-482c-ae6d-a8c5532d7f41","event":"agenda_parsed","user":"940894a8-10f1-7058-41b1-63cfb9744a93","model":"amazon.nova-pro-v1:0","prompt_version":"agenda-v1","input_tokens":1321,"output_tokens":880,"latency_ms":8298,"cost_usd":0.0038728}

@@ -13,6 +13,7 @@ from pydantic import (
     field_validator,
 )
 
+from app.ai.agenda import ActionItem, AgendaItem, ParsedAgenda
 from app.config import settings
 
 MAX_PARTICIPANTS = 50
@@ -40,6 +41,21 @@ class ParticipantRead(BaseModel):
     position: int
 
 
+class MeetingAgenda(BaseModel):
+    """Final agenda after the user reviews and edits AI suggestions."""
+
+    items: list[AgendaItem] = Field(default_factory=list, max_length=50)
+    action_items: list[ActionItem] = Field(default_factory=list, max_length=50)
+
+
+class AiSuggestionRecord(BaseModel):
+    """Original AI output retained for later quality evaluation."""
+
+    agenda: ParsedAgenda
+    model: str = Field(min_length=1, max_length=200)
+    prompt_version: str = Field(min_length=1, max_length=100)
+
+
 class MeetingCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
@@ -47,6 +63,8 @@ class MeetingCreate(BaseModel):
     starts_at: datetime
     ends_at: datetime
     participants: list[ParticipantCreate] = Field(default_factory=list)
+    agenda: MeetingAgenda | None = None
+    ai_suggestion: AiSuggestionRecord | None = None
 
     @field_validator("name")
     @classmethod
@@ -103,6 +121,8 @@ class MeetingRead(BaseModel):
     starts_at: datetime
     ends_at: datetime
     participants: list[ParticipantRead]
+    agenda: MeetingAgenda | None
+    ai_suggestion: AiSuggestionRecord | None
     created_at: datetime
     updated_at: datetime
 

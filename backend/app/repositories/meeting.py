@@ -60,6 +60,10 @@ class MeetingRepository:
             name=payload.name,
             description=payload.description,
             location=payload.location,
+            agenda=payload.agenda.model_dump(mode="json") if payload.agenda else None,
+            ai_suggestion=(
+                payload.ai_suggestion.model_dump(mode="json") if payload.ai_suggestion else None
+            ),
             starts_at=payload.starts_at,
             ends_at=payload.ends_at,
             participants=[
@@ -77,6 +81,12 @@ class MeetingRepository:
         meeting.name = payload.name
         meeting.description = payload.description
         meeting.location = payload.location
+        if "agenda" in payload.model_fields_set:
+            meeting.agenda = payload.agenda.model_dump(mode="json") if payload.agenda else None
+        if "ai_suggestion" in payload.model_fields_set:
+            meeting.ai_suggestion = (
+                payload.ai_suggestion.model_dump(mode="json") if payload.ai_suggestion else None
+            )
         meeting.starts_at = payload.starts_at
         meeting.ends_at = payload.ends_at
         meeting.participants = [

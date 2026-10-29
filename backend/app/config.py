@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     app_timezone: str = "Europe/Kyiv"
     cors_origins: str = "http://localhost:3000"
     log_level: str = "INFO"
+    parser_model: str = "amazon.nova-pro-v1:0"
     run_migrations_on_start: bool = True
     version: str = Field(default="1.0.0")
 

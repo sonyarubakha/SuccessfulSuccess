@@ -7,6 +7,48 @@ export type Participant = {
   position: number
 }
 
+export type AgendaItem = {
+  topic: string
+  owner: string | null
+  minutes: number | null
+}
+
+export type ActionItem = {
+  task: string
+  owner: string | null
+  due: string | null
+}
+
+export type MeetingAgenda = {
+  items: AgendaItem[]
+  action_items: ActionItem[]
+}
+
+export type ParsedAgenda = MeetingAgenda & {
+  title: string | null
+  starts_at: string | null
+  duration_minutes: number | null
+  language: string
+}
+
+export type AiSuggestionRecord = {
+  agenda: ParsedAgenda
+  model: string
+  prompt_version: string
+}
+
+export type AgendaParseResponse = {
+  agenda: ParsedAgenda
+  model: string
+  prompt_version: string
+  usage: {
+    input_tokens: number
+    output_tokens: number
+  }
+  latency_ms: number
+  cost_usd: number
+}
+
 export type Meeting = {
   id: string
   name: string
@@ -15,6 +57,8 @@ export type Meeting = {
   starts_at: string
   ends_at: string
   participants: Participant[]
+  agenda: MeetingAgenda | null
+  ai_suggestion: AiSuggestionRecord | null
   created_at: string
   updated_at: string
 }
@@ -39,6 +83,8 @@ export type MeetingCreateInput = {
   starts_at: string
   ends_at: string
   participants: ParticipantInput[]
+  agenda?: MeetingAgenda | null
+  ai_suggestion?: AiSuggestionRecord | null
 }
 
 export type ApiErrorDetail = {
