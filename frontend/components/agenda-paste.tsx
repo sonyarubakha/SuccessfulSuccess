@@ -42,9 +42,7 @@ export function AgendaPaste({ onParsed, disabled = false }: AgendaPasteProps) {
       if (controller.signal.aborted) return
 
       setError(
-        err instanceof ApiError
-          ? err.message
-          : "Could not parse the agenda. Please try again.",
+        err instanceof ApiError ? err.message : "Could not parse the agenda. Please try again.",
       )
     } finally {
       if (controllerRef.current === controller) {
@@ -70,8 +68,8 @@ export function AgendaPaste({ onParsed, disabled = false }: AgendaPasteProps) {
       </div>
 
       <p className="text-muted-foreground text-sm">
-        Paste meeting notes or an email. AI will suggest meeting details,
-        agenda topics and action items for you to review.
+        Paste meeting notes or an email. AI will suggest meeting details, agenda topics and action
+        items for you to review.
       </p>
 
       <Textarea
@@ -84,9 +82,7 @@ export function AgendaPaste({ onParsed, disabled = false }: AgendaPasteProps) {
         disabled={disabled || loading}
       />
 
-      <p className="text-muted-foreground text-right text-xs">
-        {text.length}/10000 characters
-      </p>
+      <p className="text-muted-foreground text-right text-xs">{text.length}/10000 characters</p>
 
       {error && (
         <p role="alert" className="text-destructive text-sm">
@@ -95,11 +91,7 @@ export function AgendaPaste({ onParsed, disabled = false }: AgendaPasteProps) {
       )}
 
       <div className="flex gap-2">
-        <Button
-          type="button"
-          onClick={handleParse}
-          disabled={disabled || loading || !text.trim()}
-        >
+        <Button type="button" onClick={handleParse} disabled={disabled || loading || !text.trim()}>
           {loading ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
           {loading ? "Parsing..." : "Parse"}
         </Button>

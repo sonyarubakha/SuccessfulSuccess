@@ -14,15 +14,9 @@ type Props = {
 }
 
 export function AgendaEditor({ initial, suggested = false, onChange }: Props) {
-  const [agenda, setAgenda] = useState<MeetingAgenda>(
-    initial ?? { items: [], action_items: [] },
-  )
-  const [suggestedItems, setSuggestedItems] = useState(
-    agenda.items.map(() => suggested),
-  )
-  const [suggestedActions, setSuggestedActions] = useState(
-    agenda.action_items.map(() => suggested),
-  )
+  const [agenda, setAgenda] = useState<MeetingAgenda>(initial ?? { items: [], action_items: [] })
+  const [suggestedItems, setSuggestedItems] = useState(agenda.items.map(() => suggested))
+  const [suggestedActions, setSuggestedActions] = useState(agenda.action_items.map(() => suggested))
 
   function commit(next: MeetingAgenda) {
     setAgenda(next)
@@ -34,21 +28,15 @@ export function AgendaEditor({ initial, suggested = false, onChange }: Props) {
       ...agenda,
       items: agenda.items.map((current, i) => (i === index ? item : current)),
     })
-    setSuggestedItems((flags) =>
-      flags.map((flag, i) => (i === index ? false : flag)),
-    )
+    setSuggestedItems((flags) => flags.map((flag, i) => (i === index ? false : flag)))
   }
 
   function changeAction(index: number, action: ActionItem) {
     commit({
       ...agenda,
-      action_items: agenda.action_items.map((current, i) =>
-        i === index ? action : current,
-      ),
+      action_items: agenda.action_items.map((current, i) => (i === index ? action : current)),
     })
-    setSuggestedActions((flags) =>
-      flags.map((flag, i) => (i === index ? false : flag)),
-    )
+    setSuggestedActions((flags) => flags.map((flag, i) => (i === index ? false : flag)))
   }
 
   return (
@@ -88,9 +76,7 @@ export function AgendaEditor({ initial, suggested = false, onChange }: Props) {
               aria-label={`Topic ${index + 1}`}
               placeholder="Topic"
               value={item.topic}
-              onChange={(event) =>
-                changeItem(index, { ...item, topic: event.target.value })
-              }
+              onChange={(event) => changeItem(index, { ...item, topic: event.target.value })}
             />
 
             <div className="grid grid-cols-2 gap-2">
@@ -169,9 +155,7 @@ export function AgendaEditor({ initial, suggested = false, onChange }: Props) {
               aria-label={`Action ${index + 1} task`}
               placeholder="Task"
               value={action.task}
-              onChange={(event) =>
-                changeAction(index, { ...action, task: event.target.value })
-              }
+              onChange={(event) => changeAction(index, { ...action, task: event.target.value })}
             />
 
             <div className="grid grid-cols-2 gap-2">
@@ -208,10 +192,7 @@ export function AgendaEditor({ initial, suggested = false, onChange }: Props) {
           onClick={() => {
             commit({
               ...agenda,
-              action_items: [
-                ...agenda.action_items,
-                { task: "", owner: null, due: null },
-              ],
+              action_items: [...agenda.action_items, { task: "", owner: null, due: null }],
             })
             setSuggestedActions((flags) => [...flags, false])
           }}

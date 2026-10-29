@@ -134,7 +134,9 @@ export function MeetingFormDialog({
     })
   }
   function suggestion(field: string) {
-    return suggestedFields.has(field) ? <span className="text-muted-foreground ml-2 text-xs">Suggested</span> : null
+    return suggestedFields.has(field) ? (
+      <span className="text-muted-foreground ml-2 text-xs">Suggested</span>
+    ) : null
   }
   const isEdit = !!meeting
 
@@ -167,11 +169,13 @@ export function MeetingFormDialog({
 
   function handleAgendaParsed(result: AgendaParseResponse) {
     const parsed = result.agenda
-    setSuggestedFields(new Set([
-      ...(parsed.title ? ["name"] : []),
-      ...(parsed.starts_at ? ["date", "startTime"] : []),
-      ...(parsed.starts_at && parsed.duration_minutes ? ["endTime"] : []),
-    ]))
+    setSuggestedFields(
+      new Set([
+        ...(parsed.title ? ["name"] : []),
+        ...(parsed.starts_at ? ["date", "startTime"] : []),
+        ...(parsed.starts_at && parsed.duration_minutes ? ["endTime"] : []),
+      ]),
+    )
 
     setEditedAgenda({
       items: parsed.items.map((item) => ({ ...item })),
@@ -192,9 +196,7 @@ export function MeetingFormDialog({
     }
 
     if (parsed.starts_at) {
-      const match = parsed.starts_at.match(
-        /^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})/,
-      )
+      const match = parsed.starts_at.match(/^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})/)
 
       if (match) {
         const hours = Number(match[1])
@@ -354,7 +356,10 @@ export function MeetingFormDialog({
                         mode="single"
                         selected={field.value}
                         onSelect={(date) => {
-                          if (date) { field.onChange(date); clearSuggestion("date") }
+                          if (date) {
+                            field.onChange(date)
+                            clearSuggestion("date")
+                          }
                           setDatePickerOpen(false)
                         }}
                         autoFocus
@@ -367,7 +372,12 @@ export function MeetingFormDialog({
 
             <div className="space-y-2">
               <Label htmlFor="startTime">Start {suggestion("startTime")}</Label>
-              <Input id="startTime" type="time" step={900} {...register("startTime", { onChange: () => clearSuggestion("startTime") })} />
+              <Input
+                id="startTime"
+                type="time"
+                step={900}
+                {...register("startTime", { onChange: () => clearSuggestion("startTime") })}
+              />
               {errors.startTime ? (
                 <p className="text-destructive text-sm">{errors.startTime.message}</p>
               ) : null}
@@ -375,7 +385,12 @@ export function MeetingFormDialog({
 
             <div className="space-y-2">
               <Label htmlFor="endTime">End {suggestion("endTime")}</Label>
-              <Input id="endTime" type="time" step={900} {...register("endTime", { onChange: () => clearSuggestion("endTime") })} />
+              <Input
+                id="endTime"
+                type="time"
+                step={900}
+                {...register("endTime", { onChange: () => clearSuggestion("endTime") })}
+              />
               {errors.endTime ? (
                 <p className="text-destructive text-sm">{errors.endTime.message}</p>
               ) : null}
