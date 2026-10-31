@@ -7,6 +7,8 @@ import { Controller, useForm } from "react-hook-form"
 import { toast } from "sonner"
 import { z } from "zod"
 
+import { AgendaEditor } from "@/components/agenda-editor"
+import { AgendaPaste } from "@/components/agenda-paste"
 import { ParticipantsInput } from "@/components/participants-input"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
@@ -25,7 +27,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { useCreateMeeting, useUpdateMeeting } from "@/hooks/use-meetings"
 import { ApiError } from "@/lib/api"
 import { formatTime, parseIsoDay, toIsoDate, toIsoWithOffset } from "@/lib/datetime"
-import type { Meeting } from "@/lib/types"
+import type { AgendaParseResponse, AiSuggestionRecord, Meeting, MeetingAgenda } from "@/lib/types"
 
 const timePattern = /^([01]\d|2[0-3]):([0-5]\d)$/
 
@@ -120,6 +122,22 @@ export function MeetingFormDialog({
   const createMeeting = useCreateMeeting()
   const updateMeeting = useUpdateMeeting()
   const [datePickerOpen, setDatePickerOpen] = useState(false)
+  const [editedAgenda, setEditedAgenda] = useState<MeetingAgenda | null>(null)
+  const [aiSuggestion, setAiSuggestion] = useState<AiSuggestionRecord | null>(null)
+  const [agendaEditorVersion, setAgendaEditorVersion] = useState(0)
+  const [suggestedFields, setSuggestedFields] = useState<Set<string>>(new Set())
+  function clearSuggestion(field: string) {
+    setSuggestedFields((current) => {
+      const next = new Set(current)
+      next.delete(field)
+      return next
+    })
+  }
+  function suggestion(field: string) {
+    return suggestedFields.has(field) ? (
+      <span className="text-muted-foreground ml-2 text-xs">Suggested</span>
+    ) : null
+  }
   const isEdit = !!meeting
 
   const form = useForm<FormValues>({
@@ -138,8 +156,77 @@ export function MeetingFormDialog({
 
   // Refill the form each time it opens, so edits start from the meeting's current values.
   useEffect(() => {
-    if (open) reset(defaultValues(meeting))
+    if (open) {
+      reset(defaultValues(meeting))
+      // Reset local draft state when the dialog opens, alongside react-hook-form.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setEditedAgenda(meeting?.agenda ?? null)
+      setAiSuggestion(meeting?.ai_suggestion ?? null)
+      setSuggestedFields(new Set())
+      setAgendaEditorVersion((version) => version + 1)
+    }
   }, [open, meeting, reset])
+
+  function handleAgendaParsed(result: AgendaParseResponse) {
+    const parsed = result.agenda
+    setSuggestedFields(
+      new Set([
+        ...(parsed.title ? ["name"] : []),
+        ...(parsed.starts_at ? ["date", "startTime"] : []),
+        ...(parsed.starts_at && parsed.duration_minutes ? ["endTime"] : []),
+      ]),
+    )
+
+    setEditedAgenda({
+      items: parsed.items.map((item) => ({ ...item })),
+      action_items: parsed.action_items.map((item) => ({ ...item })),
+    })
+
+    setAiSuggestion({
+      agenda: parsed,
+      model: result.model,
+      prompt_version: result.prompt_version,
+    })
+
+    // Remount the editor to show the new suggestions and their flags.
+    setAgendaEditorVersion((version) => version + 1)
+
+    if (parsed.title) {
+      form.setValue("name", parsed.title, { shouldDirty: true })
+    }
+
+    if (parsed.starts_at) {
+      const match = parsed.starts_at.match(/^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})/)
+
+      if (match) {
+        const hours = Number(match[1])
+        const minutes = Number(match[2])
+
+        form.setValue("date", parseIsoDay(parsed.starts_at), {
+          shouldDirty: true,
+        })
+        form.setValue("startTime", `${match[1]}:${match[2]}`, {
+          shouldDirty: true,
+        })
+
+        if (parsed.duration_minutes != null) {
+          const endMinutes = hours * 60 + minutes + parsed.duration_minutes
+
+          if (endMinutes < 1440) {
+            const endHour = String(Math.floor(endMinutes / 60)).padStart(2, "0")
+            const endMinute = String(endMinutes % 60).padStart(2, "0")
+            form.setValue("endTime", `${endHour}:${endMinute}`, {
+              shouldDirty: true,
+            })
+          } else {
+            toast.warning("Review the meeting end time: it crosses midnight.")
+          }
+        }
+      }
+    }
+
+    toast.success("Agenda parsed. Review the suggestions before saving.")
+  }
 
   const onSubmit = handleSubmit(async (values) => {
     const participants = values.participants
@@ -156,6 +243,8 @@ export function MeetingFormDialog({
       starts_at: toIsoWithOffset(values.date, values.startTime),
       ends_at: toIsoWithOffset(values.date, values.endTime),
       participants,
+      agenda: editedAgenda,
+      ai_suggestion: aiSuggestion,
     }
 
     try {
@@ -202,14 +291,22 @@ export function MeetingFormDialog({
         </DialogHeader>
 
         <form onSubmit={onSubmit} className="space-y-4">
+          <AgendaPaste onParsed={handleAgendaParsed} disabled={isSubmitting} />
+
+          <AgendaEditor
+            key={agendaEditorVersion}
+            initial={editedAgenda}
+            suggested={!!aiSuggestion}
+            onChange={setEditedAgenda}
+          />
           <div className="space-y-2">
-            <Label htmlFor="name">Name</Label>
+            <Label htmlFor="name">Name {suggestion("name")}</Label>
             <Input
               id="name"
               placeholder="Sprint planning"
               aria-invalid={!!errors.name}
               aria-describedby={errors.name ? "name-error" : undefined}
-              {...register("name")}
+              {...register("name", { onChange: () => clearSuggestion("name") })}
             />
             {errors.name ? (
               <p id="name-error" className="text-destructive text-sm">
@@ -238,7 +335,7 @@ export function MeetingFormDialog({
 
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="space-y-2 sm:col-span-1">
-              <Label>Date</Label>
+              <Label>Date {suggestion("date")}</Label>
               <Controller
                 control={control}
                 name="date"
@@ -259,7 +356,10 @@ export function MeetingFormDialog({
                         mode="single"
                         selected={field.value}
                         onSelect={(date) => {
-                          if (date) field.onChange(date)
+                          if (date) {
+                            field.onChange(date)
+                            clearSuggestion("date")
+                          }
                           setDatePickerOpen(false)
                         }}
                         autoFocus
@@ -271,16 +371,26 @@ export function MeetingFormDialog({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="startTime">Start</Label>
-              <Input id="startTime" type="time" step={900} {...register("startTime")} />
+              <Label htmlFor="startTime">Start {suggestion("startTime")}</Label>
+              <Input
+                id="startTime"
+                type="time"
+                step={900}
+                {...register("startTime", { onChange: () => clearSuggestion("startTime") })}
+              />
               {errors.startTime ? (
                 <p className="text-destructive text-sm">{errors.startTime.message}</p>
               ) : null}
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="endTime">End</Label>
-              <Input id="endTime" type="time" step={900} {...register("endTime")} />
+              <Label htmlFor="endTime">End {suggestion("endTime")}</Label>
+              <Input
+                id="endTime"
+                type="time"
+                step={900}
+                {...register("endTime", { onChange: () => clearSuggestion("endTime") })}
+              />
               {errors.endTime ? (
                 <p className="text-destructive text-sm">{errors.endTime.message}</p>
               ) : null}

@@ -11,7 +11,6 @@ from app.auth import CurrentUserDep
 from app.config import settings
 
 router = APIRouter(prefix="/reports", tags=["reports"])
-sqs = boto3.client("sqs")
 
 
 @router.post(
@@ -31,6 +30,7 @@ def request_current_report(user: CurrentUserDep) -> dict[str, str]:
     iso_year, iso_week, _ = now.isocalendar()
     week = f"{iso_year}-W{iso_week:02d}"
 
+    sqs = boto3.client("sqs", region_name=os.getenv("AWS_REGION", "us-east-1"))
     sqs.send_message(
         QueueUrl=queue_url,
         MessageBody=json.dumps(

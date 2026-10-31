@@ -1,0 +1,187 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Authenticated AI agenda parsing with Amazon Nova through Bedrock.
+  The parser runs outside the VPC and never writes to the database.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: successfulsuccess
+
+  ImageUri:
+    Type: String
+    Description: Backend Lambda container image pinned by digest.
+
+  ParserModel:
+    Type: String
+    Default: amazon.nova-pro-v1:0
+
+  ParserInputPrice:
+    Type: Number
+    Default: 0.80
+    Description: USD per million input tokens.
+
+  ParserOutputPrice:
+    Type: Number
+    Default: 3.20
+    Description: USD per million output tokens.
+
+  CorsOrigins:
+    Type: CommaDelimitedList
+    Description: Allowed frontend origins, without trailing slashes.
+
+  CognitoUserPoolId:
+    Type: String
+
+  CognitoClientId:
+    Type: String
+
+  BudgetEmail:
+    Type: String
+    Default: ""
+    Description: Email receiving the monthly USD 5 budget alert.
+
+Conditions:
+  HasBudgetEmail: !Not [!Equals [!Ref BudgetEmail, ""]]
+
+Resources:
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Condition: HasBudgetEmail
+    Properties:
+      Budget:
+        BudgetName: !Sub "${ProjectName}-ai-monthly"
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: 5
+          Unit: USD
+        CostFilters:
+          Service:
+            - Amazon Bedrock
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetEmail
+
+  ParserRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+      Policies:
+        - PolicyName: InvokeAgendaModel
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${ParserModel}"
+
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  ParserLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ProjectName}-agenda-parser"
+      RetentionInDays: 7
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  ParserFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-agenda-parser"
+      Description: Parse meeting agendas using Amazon Nova on Bedrock
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ImageUri
+      ImageConfig:
+        Command:
+          - app.ai.agenda_lambda.handler
+      Architectures:
+        - x86_64
+      Role: !GetAtt ParserRole.Arn
+      MemorySize: 512
+      Timeout: 30
+      LoggingConfig:
+        LogGroup: !Ref ParserLogGroup
+
+      Environment:
+        Variables:
+          PARSER_MODEL: !Ref ParserModel
+          PARSER_INPUT_PRICE: !Ref ParserInputPrice
+          PARSER_OUTPUT_PRICE: !Ref ParserOutputPrice
+          COGNITO_REGION: !Ref AWS::Region
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
+          COGNITO_CLIENT_ID: !Ref CognitoClientId
+          LOG_LEVEL: INFO
+
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  ParserFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt ParserFunction.Arn
+      AuthType: NONE
+      Cors:
+        AllowOrigins: !Ref CorsOrigins
+        AllowMethods:
+          - POST
+        AllowHeaders:
+          - Authorization
+          - Content-Type
+        MaxAge: 300
+
+  ParserUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ParserFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+  ParserInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ParserFunction
+      Action: lambda:InvokeFunction
+      Principal: "*"
+      InvokedViaFunctionUrl: true
+
+Outputs:
+  ParserFunctionName:
+    Description: Agenda parser Lambda name
+    Value: !Ref ParserFunction
+
+  ParserFunctionUrl:
+    Description: HTTPS endpoint used by the frontend
+    Value: !GetAtt ParserFunctionUrl.FunctionUrl
+
+  ParserLogGroupName:
+    Description: CloudWatch log group for parse requests
+    Value: !Ref ParserLogGroup
+
+  ParserRoleArn:
+    Description: IAM role of the agenda parser
+    Value: !GetAtt ParserRole.Arn

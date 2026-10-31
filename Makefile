@@ -20,6 +20,7 @@ endif
 -include .env
 # Every stack (ECR, ECS/Fargate, Aurora, S3 + CloudFront) is created in this one region.
 AWS_REGION ?= us-east-1
+PARSER_MODEL ?= amazon.nova-pro-v1:0
 ifeq ($(strip $(PROJECT_NAME)),)
 PROJECT_NAME := successfulsuccess
 endif
@@ -42,6 +43,7 @@ AUTH_STACK ?= $(PROJECT_NAME)-auth
 APP_STACK ?= $(PROJECT_NAME)-backend
 SERVERLESS_STACK ?= $(PROJECT_NAME)-serverless-backend
 REPORTS_STACK ?= $(PROJECT_NAME)-reports
+AI_STACK ?= $(PROJECT_NAME)-ai
 ECR_STACK ?= $(PROJECT_NAME)-ecr
 FRONTEND_STACK ?= $(PROJECT_NAME)-frontend
 IMAGE_TAG ?= $(shell git rev-parse HEAD)
@@ -102,7 +104,7 @@ define require-db-password
 endef
 
 .PHONY: help up up-build down down-v logs ps migrate revision seed test lint fmt shell-backend psql \
-        aws-whoami aws-deploy aws-deploy-auth aws-auth-env aws-ecr aws-push aws-deploy-backend aws-deploy-reports report-now aws-migrate aws-url aws-status aws-logs \
+        aws-whoami llm-hello parse aws-deploy aws-deploy-auth aws-auth-env aws-ecr aws-push aws-deploy-backend aws-deploy-reports report-now aws-migrate aws-url aws-status aws-logs \
         aws-frontend-cert aws-deploy-frontend aws-frontend-url aws-destroy
 		deploy-backend deploy-frontend
 help:
@@ -158,6 +160,15 @@ psql: ## Open psql against the application database
 aws-whoami: ## Verify the AWS credentials in .env
 	$(require-aws-credentials)
 	$(AWS) sts get-caller-identity
+
+llm-hello: ## Call Amazon Nova through Amazon Bedrock and print usage
+	@cd backend && AWS_REGION="$(AWS_REGION)" PARSER_MODEL="$(PARSER_MODEL)" \
+		uv run python -m app.ai.hello
+
+parse: ## Parse pasted agenda text: make parse TEXT="..."
+	@test -n "$(TEXT)" || { echo 'Usage: make parse TEXT="agenda text"'; exit 1; }
+	@cd backend && AWS_REGION="$(AWS_REGION)" PARSER_MODEL="$(PARSER_MODEL)" \
+		uv run python -m app.ai.parse_cli "$(TEXT)"
 
 aws-deploy: ## Deploy everything: sign-in, then the backend, then the frontend built against both
 	@$(MAKE) --no-print-directory aws-deploy-auth
@@ -455,12 +466,15 @@ aws-deploy-frontend: ## Deploy the frontend to S3 + CloudFront, built against th
 		case "$$api" in ""|None) api="http://localhost:8000" ;; esac; \
 		auth=$$($(call stack-outputs,$(AUTH_STACK)) | tr -d '\r'); \
 		auth_out() { printf '%s\n' "$$auth" | awk -F '\t' -v k="$$1" '$$1 == k { print $$2 }'; }; \
+		parser=$$($(call stack-output,$(AI_STACK),ParserFunctionUrl) | tr -d '[:space:]'); \
+		test -n "$$parser" -a "$$parser" != "None" || { echo "AI parser URL not found"; exit 1; }; \
 		bucket=$$($(call stack-output,$(FRONTEND_STACK),BucketName) | tr -d '[:space:]'); \
 		dist=$$($(call stack-output,$(FRONTEND_STACK),DistributionId) | tr -d '[:space:]'); \
 		echo "Building the static export against $$api"; \
 		rm -rf frontend/out; \
 		docker build --target export --output type=local,dest=frontend/out \
 			--build-arg NEXT_PUBLIC_API_BASE_URL="$$api" \
+			--build-arg NEXT_PUBLIC_AI_PARSER_URL="$$parser" \
 			--build-arg NEXT_PUBLIC_COGNITO_USER_POOL_ID="$$(auth_out UserPoolId)" \
 			--build-arg NEXT_PUBLIC_COGNITO_CLIENT_ID="$$(auth_out UserPoolClientId)" \
 			--build-arg NEXT_PUBLIC_COGNITO_DOMAIN="$$(auth_out HostedDomain)" \
@@ -511,3 +525,43 @@ aws-destroy: ## Delete every stack, including the database and its data
 deploy-backend: aws-deploy-backend ## Build, push and deploy the backend to ECS/Fargate
 
 deploy-frontend: aws-deploy-frontend ## Build and deploy the frontend to S3 + CloudFront
+
+.PHONY: aws-deploy-ai
+
+aws-deploy-ai: aws-ecr aws-push ## Deploy AI agenda parser Lambda and Function URL
+	$(require-aws-credentials)
+	@set -e; \
+		pool=$$($(call stack-output,$(AUTH_STACK),UserPoolId) | tr -d '[:space:]'); \
+		client=$$($(call stack-output,$(AUTH_STACK),UserPoolClientId) | tr -d '[:space:]'); \
+		cors=$$($(call stack-output,$(FRONTEND_STACK),AllowedOrigins) | tr -d '[:space:]'); \
+		repo=$$($(call stack-output,$(ECR_STACK),RepositoryUri) | tr -d '[:space:]'); \
+		test -n "$$pool" -a "$$pool" != "None" || { echo "Cognito pool not found"; exit 1; }; \
+		test -n "$$client" -a "$$client" != "None" || { echo "Cognito client not found"; exit 1; }; \
+		test -n "$$cors" -a "$$cors" != "None" || { echo "Frontend origins not found"; exit 1; }; \
+		test -n "$$repo" -a "$$repo" != "None" || { echo "ECR repository not found"; exit 1; }; \
+		digest=$$($(AWS) ecr describe-images \
+			--repository-name "$${repo#*/}" \
+			--image-ids imageTag=$(IMAGE_TAG) \
+			--query 'imageDetails[0].imageDigest' \
+			--output text | tr -d '[:space:]'); \
+		test -n "$$digest" -a "$$digest" != "None" || { echo "ECR image digest not found"; exit 1; }; \
+		echo "Deploying AI parser with $$repo@$$digest"; \
+		$(call wait-stack-idle,$(AI_STACK)); \
+		$(call clear-failed-create,$(AI_STACK)); \
+		$(AWS) cloudformation deploy \
+			--region $(AWS_REGION) \
+			--stack-name $(AI_STACK) \
+			--template-file infra/ai.yml \
+			--capabilities CAPABILITY_IAM \
+			--no-fail-on-empty-changeset \
+			$(STACK_TAGS) \
+			--parameter-overrides \
+				"ProjectName=$(PROJECT_NAME)" \
+				"ImageUri=$$repo@$$digest" \
+				"ParserModel=$(PARSER_MODEL)" \
+				"CorsOrigins=$$cors,http://localhost:3000" \
+				"CognitoUserPoolId=$$pool" \
+				"CognitoClientId=$$client" \
+				"BudgetEmail=$(BUDGET_EMAIL)"; \
+		echo "AI parser deployed successfully"; \
+		$(call stack-output,$(AI_STACK),ParserFunctionUrl)
