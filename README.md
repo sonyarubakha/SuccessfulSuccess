@@ -30,22 +30,22 @@ The backend applies migrations on start.
 
 Every page except the login page, and every `/api/v1` endpoint, needs a
 signed-in user, and each user sees only their own meetings. Sign-in is an AWS
-Cognito user pool (`infra/auth.yml`): email + password, and Google when it is
+Cognito user pool (`infra/auth.tf`, managed by HCP Terraform): email + password, and Google when it is
 configured. Even for local development the pool lives in AWS (it is free at
 this scale):
 
 ```bash
-make aws-deploy-auth   # create/update the user pool; allows http://localhost:$FRONTEND_PORT/
 make aws-auth-env      # prints COGNITO_* lines: paste them into .env
 docker compose up -d   # restart so the API and the frontend pick them up
 ```
 
-**Google sign-in** (optional): in Google Cloud console create an OAuth client of
-type *Web application*, put its id and secret in `.env` as `GOOGLE_CLIENT_ID` /
-`GOOGLE_CLIENT_SECRET`, run `make aws-deploy-auth`, and add the redirect URI it
-prints (`https://<prefix>.auth.<region>.amazoncognito.com/oauth2/idpresponse`)
-to the client's *Authorized redirect URIs*. Without it the Google button says
-Google sign-in is not enabled.
+**Google sign-in** uses the existing Google OAuth client. Keep its secret in the
+sensitive HCP workspace variable `google_client_secret`; its public client ID is
+`google_client_id`. Review changes through the HCP VCS workflow below. Read the
+public redirect URI with `terraform -chdir=infra output -raw google_redirect_uri`
+and ensure it is registered with Google. Cognito callback/logout URLs are managed
+by `app_urls`, including the local development URL. Changing `.env` does not
+update the Terraform-managed pool.
 
 The first time someone signs in, the frontend sends their ID token to
 `POST /api/v1/me/sync`, which stores their profile (email, name, picture,
@@ -115,213 +115,180 @@ Things that are already taken care of, and why:
 
 ## Deploy to AWS
 
-`infra/` holds four CloudFormation templates: `auth.yml` (Cognito sign-in),
-`ecr.yml` (image registry), `backend.yml` (API and database) and `frontend.yml`
-(site). `make` reads `.env`,
-so the `aws-*` targets pick up the credentials and settings from there; `.env` is
-gitignored, so real keys never reach the repository. The AWS CLI runs in the
-`amazon/aws-cli` container, so nothing has to be installed on the host besides
-Docker (`AWS=aws make aws-deploy` uses a local CLI instead, which is noticeably
-faster).
+Infrastructure has two owners after Lab 7:
 
-```
-browser ──https──→ CloudFront (optional custom domain) → private S3 bucket (Next.js static export)
-   └────https──→ Lambda function URL → Lambda → Aurora Serverless v2 :5432
-```
+| Owner | Infrastructure | Configuration |
+|---|---|---|
+| HCP Terraform | Cognito Auth, weekly Reports, AI parser: 40 managed resources | `infra/auth.tf`, `reports.tf`, `ai.tf` |
+| CloudFormation | Shared ECR, serverless API/database/network, compatibility API distribution, frontend | `infra/ecr.yml`, `backend-serverless.yml`, `backend.yml`, `frontend.yml` |
 
-Every resource lives in `AWS_REGION`, **us-east-1** by default, which is also
-where CloudFront reads its certificates from. There is no API Gateway or load
-balancer: the browser calls the API on its function URL, and FastAPI's CORS
-settings allow it.
+The original Auth, Reports and AI stacks were removed after their resources were
+retained and imported. Their YAML templates are historical migration references;
+do not deploy them again. Older CloudFormation infrastructure stays under its
+existing ownership. See [ADR 0007](docs/adr/0007-terraform.md) for the migration.
 
-Every stack is tagged `PROJECT_NAME=<value of PROJECT_NAME>`, and every resource
-that accepts tags also carries it explicitly in the templates. Filter by it in
-Cost Explorer or Resource Groups to see everything the project owns.
+### HCP Terraform: VCS-driven infrastructure workflow
 
-### One command
+| Setting | Value |
+|---|---|
+| Organization | `successfulsuccess-lab7-org` |
+| Workspace | `successfulsuccess-lab7` |
+| GitHub repository / branch | `dobosevych/SuccessfulSuccess` / `lab7` |
+| Terraform working directory | `infra` |
+| Execution and state | Remote execution; state stored in HCP Terraform |
+| Approval | Manual Apply enabled; Auto-apply disabled |
 
-```bash
-make aws-whoami   # check the credentials work
-make aws-deploy   # sign-in, then the backend, then the frontend built against both
-```
+Open the [HCP workspace](https://app.terraform.io/app/successfulsuccess-lab7-org/workspaces/successfulsuccess-lab7).
 
-`aws-deploy` runs `aws-deploy-auth` and then the two steps below in order: the
-backend checks tokens from the user pool, and the frontend bakes the API URL and
-the pool's ids into its build. Each step can also run on its own.
+1. Edit Terraform configuration or reviewed non-sensitive inputs in
+   `infra/lab7.auto.tfvars`. Preserve the committed `.terraform.lock.hcl` unless
+   deliberately reviewing a provider upgrade.
+2. Run `terraform -chdir=infra fmt -check`,
+   `terraform -chdir=infra validate` and `git diff --check` locally. A fresh
+   checkout needs provider initialization first.
+3. Review the diff, then commit and push to `lab7` when authorized. GitHub VCS
+   integration queues the remote run from `infra`; local `terraform.tfvars` is
+   ignored and is not available to that run.
+4. Review the HCP plan for the exact commit. Check additions, updates,
+   replacements, deletions and output changes. Investigate unexpected changes;
+   discard an unsafe run rather than approving it.
+5. An authorized reviewer manually confirms Apply in HCP. No-change runs need no
+   apply. Inspect the completed run and the next no-change plan.
 
-The backend Lambda sits in a VPC with no internet access, so it cannot download
-the pool's signing keys itself; `aws-deploy-backend` fetches them
-(`<issuer>/.well-known/jwks.json`) and passes them in as `COGNITO_JWKS`.
-`aws-deploy-frontend` re-deploys the auth stack once the CloudFront URL exists,
-so Cognito may redirect back to the site after Google sign-in.
+Do not run local Terraform apply, import or destroy for this VCS-managed
+infrastructure. Make does not execute Terraform mutations. `make infra-workflow`
+prints the workflow and workspace URL.
 
-Fill these in `.env` first:
+**Output-only demonstration:** `report_queue_name` in `infra/outputs.tf` reads the
+existing queue name. Once this change is reviewed and pushed, the expected HCP
+plan has **0 resource additions, 0 resource changes, 0 resource deletions** and
+one added output. Review and manually apply that run in HCP to publish the output
+to remote state. The output is unavailable to state readers until that apply;
+none of the existing Make commands depends on it yet.
 
-```bash
-AWS_ACCESS_KEY_ID=...        # an IAM user, not root access keys
-AWS_SECRET_ACCESS_KEY=...
-AWS_REGION=us-east-1
-PROJECT_NAME=successfulsuccess   # prefixes every resource name, and the PROJECT_NAME tag
-AWS_DB_PASSWORD=...          # 8-41 chars, [A-Za-z0-9_-] only
-AWS_CORS_ORIGINS=            # empty: follow the frontend's URLs (* until it exists)
-GOOGLE_CLIENT_ID=            # optional: Google sign-in (see "Sign-in" above)
-GOOGLE_CLIENT_SECRET=
-AWS_FRONTEND_DOMAIN=         # optional, e.g. app.example.com
-```
+### Credentials, variables and state
 
-### 1. Backend — Lambda function URL, Aurora Serverless v2
+HCP runs authenticate to AWS with OIDC dynamic credentials, using
+`TFC_AWS_PROVIDER_AUTH=true` and the configured `TFC_AWS_RUN_ROLE_ARN`. AWS trust
+must constrain the audience `aws.workload.identity` and the exact organization,
+project (`Default Project`), workspace and approved plan/apply phases. The default
+AWS provider and `aws.untagged` share the same credentials; the alias avoids
+adding default tags to the existing untagged security-group rule. Do not add
+long-lived AWS keys to Git or workspace Terraform variables. A read-only AWS role
+supports refresh and output-only changes; future infrastructure changes require
+separately reviewed permissions.
 
-```bash
-make aws-deploy-backend   # ECR + build & push + create/update the stack + migrate, prints the URL
-```
+The 27 non-sensitive VCS inputs live in `infra/lab7.auto.tfvars`: resource names,
+IDs, public endpoints, image digests and application settings. Configure
+`db_password`, `google_client_secret`, `report_recipients` and `budget_email` as
+sensitive **Terraform** workspace variables. Keep overlapping workspace inputs
+consistent with the checked-in configuration. `.env`, private `*.tfvars`, state
+and saved plans stay ignored; only the reviewed `lab7.auto.tfvars` is exempt.
 
-The API runs as a **Lambda function** from a container image
-(`backend/Dockerfile.lambda`): the same FastAPI app, adapted to Lambda by
-[Mangum](https://github.com/Kludex/mangum) in `app/lambda_handler.py`. Requests
-reach it through its **function URL** (`https://<id>.lambda-url.<region>.on.aws`),
-Lambda's own public HTTPS endpoint, and that URL is the backend URL the frontend
-is built with. FastAPI keeps doing the routing, CORS and error envelope exactly
-as it does locally. `backend/Dockerfile` stays the local/compose image.
+Sensitive input annotations redact normal output but do not remove secrets from
+state. Restrict HCP state/run access and cross-workspace sharing, protect tokens,
+and avoid raw state exports, all-output JSON dumps or debug logs in shared logs.
+Do not print the Google secret or password-bearing database URLs.
 
-The database is an **Aurora Serverless v2** PostgreSQL cluster with one
-`db.serverless` writer at the smallest size Aurora allows: it scales between
-0 and 1 ACU (`DbMinCapacity`, `DbMaxCapacity`) and **pauses after 5 idle
-minutes** (also the minimum), so an unused deployment
-pays only for storage. The first connection after a pause waits ~15 s while it
-resumes; the function's 60 s timeout covers that.
-
-The function sits in the account's **default VPC**, next to the cluster, so the
-database is never public: its security group only accepts the function's. The
-function needs nothing else on the network, so there is no NAT gateway.
-
-Migrations run in the same function: invoked directly with
-`{"action": "migrate"}` it applies them instead of serving a request. Function
-URL events never carry that key, so no web request can trigger it.
-`make aws-deploy-backend` invokes it after every deploy, so migrations run once
-per deploy rather than racing on each cold start.
-
-The first deploy takes ~15 minutes; Aurora is the slow part. It is idempotent —
-run it again to ship a new version. The image is passed to the stack by digest,
-not by tag, so every push really does update the function. If the stack is
-still busy with an earlier update, the target waits for it rather than failing.
-
-| Command | What it does |
-|---------|--------------|
-| `make aws-url` | Print the API URL (`/docs` for Swagger, `/health` for the check) |
-| `make aws-status` | Stack outputs plus the API function's state |
-| `make aws-logs` | Follow the function logs from CloudWatch |
-| `make aws-migrate` | Apply migrations again on their own |
-| `make aws-destroy` | Delete every stack (asks first — the database goes too) |
-
-The image is built for `AWS_LAMBDA_ARCH` (`x86_64` by default).
-`AWS_LAMBDA_ARCH=arm64 make aws-deploy-backend` is ~20% cheaper and builds
-natively on Apple Silicon. The image platform follows this variable, so the two
-cannot drift apart. The build passes `--provenance=false` because Lambda rejects
-the multi-manifest image index that BuildKit otherwise pushes.
-
-### 2. Frontend — S3 + CloudFront
+For local read-only access to the public outputs used by Make, install Terraform
+and authenticate to HCP with an account allowed to read this workspace's outputs:
 
 ```bash
-make aws-deploy-frontend   # create/update the stack, build against the API URL, upload
-make aws-frontend-url      # print the site URL
+terraform login
+terraform -chdir=infra init -lockfile=readonly
+make infra-ready
+make aws-auth-env
+terraform -chdir=infra output -raw google_redirect_uri
 ```
 
-The target refuses to run until the backend stack exists. It reads the
-backend's function URL from that stack, builds the Next.js **static export** in
-Docker with `NEXT_PUBLIC_API_BASE_URL` set to it, syncs the files to a
-**private S3 bucket** and invalidates the **CloudFront** distribution in front
-of it. The site is served over HTTPS at `https://<id>.cloudfront.net`. A new
-distribution takes ~5 minutes to come up.
+Initialization connects the existing workspace and installs locked providers; it
+is not an import, apply or state migration. Stop if initialization proposes moving
+state or selecting another workspace. The Make targets read selected public
+outputs using `terraform output -raw`; never use this option for secret outputs.
+Local AWS credentials are separate from the OIDC credentials issued inside HCP.
+See HashiCorp's [VCS workflow](https://developer.hashicorp.com/terraform/cloud-docs/workspaces/run/ui),
+[AWS dynamic credentials](https://developer.hashicorp.com/terraform/cloud-docs/dynamic-provider-credentials/aws-configuration)
+and [output command](https://developer.hashicorp.com/terraform/cli/commands/output).
 
-- The distribution is on CloudFront's **flat-rate Free plan**
-  (`AWS::PricingPlanManager::Subscription`): $0 a month for 1M requests and
-  100 GB, with no overage charges, WAF and DDoS protection included. The plan
-  requires a web ACL of its own, so the stack creates one that allows
-  everything. AWS allows 3 Free plans per account and refuses them while the
-  account is on the AWS Free Tier; set `AWS_CLOUDFRONT_PLAN=PAY_AS_YOU_GO` there.
-  `PricingPlanStatus` in the stack outputs reads `ACTIVE` once it applies.
-- The bucket blocks all public access. CloudFront reads it through **origin
-  access control**, and the bucket policy admits only this distribution.
-- The export is built with `trailingSlash`, so each route is a folder with an
-  `index.html` (`/meetings/new/`). A small CloudFront Function maps clean URLs
-  onto those files, since S3's REST endpoint has no index documents. Anything
-  missing gets the export's `404.html` with a 404 status.
-  `output` stays `standalone` for the compose/production image and switches to
-  `export` only when `NEXT_OUTPUT=export` is set, which is the deploy target's
-  job.
-- HTML is uploaded with `no-cache` and the hashed assets with a one-year
-  immutable header, and every deploy invalidates `/*`, so a new version shows up
-  on the next page load.
-- With `AWS_CORS_ORIGINS` empty, the backend allows exactly the frontend's
-  origins (the CloudFront URL and the custom domain). On the very first
-  `make aws-deploy` the frontend does not exist yet, so the API starts with `*`;
-  the frontend step says so, and the next `make aws-deploy-backend` locks it down.
+### Legacy CloudFormation application workflows
 
-### 3. Custom domain for the frontend (optional)
+Use an authenticated AWS CLI (`AWS=aws` by default), Docker and Make. Local
+application/deployment settings still come from the gitignored `.env`. Never
+commit AWS credentials or database passwords. These targets continue to operate
+on older CloudFormation infrastructure and application code:
 
 ```bash
-# .env
-AWS_FRONTEND_DOMAIN=app.example.com
-
-make aws-frontend-cert      # request + DNS-validate the certificate in us-east-1
-make aws-deploy-frontend    # attach the domain to the distribution
-make aws-deploy-backend     # add the new origin to the API's CORS
+make aws-whoami
+make aws-deploy-backend    # ECR build/push, serverless API/database and compatibility API, migrations
+make aws-deploy-frontend   # frontend CloudFormation, static build/upload and invalidation
+make aws-deploy            # backend then frontend, using existing HCP Auth/AI outputs
+make aws-release-backend   # release code to the legacy API Lambda, then migrations
+make aws-url
+make aws-status
+make aws-logs
+make aws-migrate
 ```
 
-CloudFront only reads ACM certificates from **us-east-1**, and that is where
-everything is deployed. `make aws-frontend-cert` (`infra/certificate.sh`) reuses
-an issued or pending certificate for the domain, or requests one, then waits for
-DNS validation. If the domain's Route 53 hosted zone is in this account, it
-writes the validation record itself, and the frontend stack adds the A/AAAA
-alias records pointing at the distribution. Otherwise both print the records
-to add at your DNS provider: the validation CNAME, then a CNAME from the domain
-to the distribution's `*.cloudfront.net` name.
+Backend and frontend deployment first check access to existing HCP outputs.
+Cognito IDs/issuer and the AI parser URL now come from Terraform state. The
+backend still fetches the issuer's JWKS and passes it to its private-VPC Lambda;
+shared database, VPC and backend outputs still come from CloudFormation.
+`aws-release-backend` updates only the legacy API function, not the Terraform
+Reports or parser functions.
 
-The API keeps its function URL: a function URL cannot take a custom domain.
+`make aws-deploy-auth`, `make aws-deploy-reports` and `make aws-deploy-ai` now
+fail with guidance to the HCP workflow. They do not build/push images or recreate
+stacks. To release Reports/AI code, build/push with the existing ECR tooling when
+authorized, set the reviewed immutable digest in `reports_image_uri` or
+`ai_image_uri`, and use a GitHub-triggered plan and manual HCP approval. An image
+push alone does not update those Terraform-managed functions.
 
-### Cost
+`make report-now WEEK=YYYY-Www` reads `report_queue_url` from HCP and sends a real
+SQS message; it can generate a report and email. Run it only when that operational
+action is intended, never as a harmless infrastructure validation.
 
-- **Lambda** — 1M requests and 400,000 GB-seconds a month, always free. The
-  function URL costs nothing beyond the invocation.
-- **Aurora Serverless v2** is not in the free tier. It bills per ACU-hour while
-  awake, nothing for compute while paused, plus storage and I/O. A demo that
-  sits idle costs cents a month.
-- **CloudFront** — the flat-rate Free plan: $0, 1M requests and 100 GB a month,
-  never an overage charge (traffic past it may be slowed, not billed).
-  **S3** — 5 GB and 20,000 GETs in the free tier; CloudFront caches most reads.
-  ACM certificates are free.
-- **ECR** — 500 MB in the free tier; the lifecycle policy keeps five images.
+The API uses `backend/Dockerfile.lambda` and a Lambda Function URL with Aurora in
+the default VPC. The compatibility API distribution and frontend retain their
+CloudFormation deployment paths. Images default to `linux/amd64` with
+`--provenance=false`, matching the legacy API's configured `x86_64` architecture.
+The local Compose stack continues to use `backend/Dockerfile`.
 
-`make aws-destroy` deletes everything, database included, with no snapshot left
-behind. Accounts opened after July 2025 get credits instead of the classic free
-tier — check your billing console rather than assuming.
+Frontend builds use the API URL plus public Cognito/parser outputs. If the
+frontend domain or local port changes, review Cognito callback/logout `app_urls`
+and parser `cors_origins` through Terraform before relying on the new origin.
+Frontend deployment no longer redeploys Cognito automatically. Legacy API CORS
+still follows `AWS_CORS_ORIGINS`/the frontend outputs via `make aws-deploy-backend`.
 
-### Known trade-offs
+For an optional frontend domain, set `AWS_FRONTEND_DOMAIN` in `.env`, run
+`make aws-frontend-cert` and deploy the frontend. Certificate validation and
+frontend Route 53 configuration remain CloudFormation/tooling responsibilities.
+Review the Terraform origin/callback changes and redeploy legacy API CORS as
+needed. CloudFront certificates must be in `us-east-1`.
 
-- **No custom domain on the API**: function URLs cannot take one. Putting one on
-  it would need API Gateway or a second CloudFront distribution in front.
-- The database password reaches the function as a plain environment variable.
-  Moving it to SSM Parameter Store or Secrets Manager is the first thing to
-  harden.
-- **Cold starts**: the first request after a few idle minutes waits ~1–2 s while
-  Lambda starts the container, and up to ~15 s more if Aurora has paused.
-- Every warm instance holds one database connection. Nothing is reserved by
-  default (`MaxConcurrency=0`): new accounts have a Lambda concurrency limit of
-  10 in total and Lambda refuses to reserve any of it, so that limit is the cap,
-  well under the cluster's connection limit. Once the limit is raised, set
-  `MaxConcurrency` to keep a spike off the database; requests beyond it get
-  HTTP 429. RDS Proxy is the proper fix, and it is not free.
-- The function URL is public: FastAPI checks the Cognito access token on every
-  `/api/v1` request, but there is no request throttling in front of it beyond
-  the concurrency limit.
-- Cognito sends its emails (sign-up codes, password resets) itself, capped at 50
-  a day. Switch the pool to SES before real traffic.
-- Signing up with a password and later with Google under the same email makes
-  two separate Cognito users, with separate meetings. Linking them needs a
-  pre-sign-up Lambda trigger.
-- Deleting the backend stack takes ~20 minutes: Lambda releases its VPC network
-  interfaces slowly, and the security groups wait for them.
-- One Aurora instance: there is no reader to fail over to.
+### Operational boundaries
+
+`make aws-destroy` is a **partial, destructive teardown** of the legacy frontend
+and compatibility API distribution only. It asks for confirmation and empties the
+frontend bucket. It preserves the shared serverless API/database, ECR repository
+and all Terraform resources. Full teardown needs a separate dependency review:
+Terraform Reports uses the legacy backend's database/network, and both ownership
+sets use ECR images. Deleting the registry would break deployed Lambdas.
+
+ECR automatic image expiration is disabled after a policy deleted deployed image
+digests during migration. Keep deployed digests available; do not prune images
+based only on age or tag count. Storage grows until a separately reviewed cleanup
+strategy is introduced. The original Reports image was restored exactly, and both
+Reports functions were reactivated before the retention migration completed.
+
+Temporary migration ignores cover the Google `client_secret` and builder
+`DATABASE_URL` individual map entries because import plans showed identical
+values with differing sensitivity metadata. They also suppress genuine changes
+to those fields while present. Review them individually after import, privately
+compare values, remove one ignore and inspect a fresh remote plan before any
+approval. Keep both input variables sensitive and never use blanket ignores.
+Separate Google discovery-field ignores preserve AWS-populated OAuth metadata.
+Cognito pool/client/branding and the reports bucket retain `prevent_destroy`
+safeguards. See the ADR for remaining tradeoffs and the migration record.
 
 ## API
 
@@ -359,13 +326,13 @@ sent, so every client shows the same time as the day it was listed under.
 ```
 backend/    FastAPI app (api → services → repositories → models), Alembic, tests
 frontend/   Next.js app, shadcn/ui primitives in components/ui
-infra/      CloudFormation templates behind the aws-* targets
+infra/      Terraform Auth/Reports/AI plus legacy CloudFormation templates
 docker-compose.yml
 ```
 
 ## Continuous integration
 
-`.github/workflows/style.yml` runs on every push to `main` and gates style only:
+`.github/workflows/style.yml` runs on pushes to all branches and gates style:
 
 | Job | Runs | Against |
 |-----|------|---------|
@@ -383,7 +350,10 @@ cd backend  && uvx ruff@0.16.6 check . && uvx ruff@0.16.6 format --diff .
 cd frontend && npm ci && npm run lint
 ```
 
-There is no deploy (CD) stage — no target is configured yet.
+Infrastructure delivery for Auth/Reports/AI is connected directly from GitHub
+branch `lab7` to HCP Terraform, with plan review and manual apply. The style
+workflow does not deploy. Legacy backend/frontend application releases remain
+explicit Make commands.
 
 ## Development notes
 

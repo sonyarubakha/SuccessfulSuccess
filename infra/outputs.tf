@@ -1,4 +1,4 @@
-# Output equivalents of auth.yml, reports.yml and ai.yml for the later Makefile migration.
+# Public outputs used by application tooling after the Terraform migration.
 output "user_pool_id" {
   value = aws_cognito_user_pool.main.id
 }
@@ -29,6 +29,11 @@ output "report_bucket_name" {
 
 output "report_queue_url" {
   value = aws_sqs_queue.reports.url
+}
+
+output "report_queue_name" {
+  description = "Name of the existing weekly report SQS queue"
+  value       = aws_sqs_queue.reports.name
 }
 
 output "report_queue_arn" {
