@@ -21,23 +21,24 @@ Resources:
           Value: !Ref ProjectName
       ImageScanningConfiguration:
         ScanOnPush: true
-      # The free tier gives 500 MB of storage, so keep only recent images.
-      LifecyclePolicy:
-        LifecyclePolicyText: |
-          {
-            "rules": [
-              {
-                "rulePriority": 1,
-                "description": "Keep the 5 most recent images",
-                "selection": {
-                  "tagStatus": "any",
-                  "countType": "imageCountMoreThan",
-                  "countNumber": 5
-                },
-                "action": { "type": "expire" }
-              }
-            ]
-          }
+      # Preserve the existing Lambda retrieval policy during repository updates.
+      RepositoryPolicyText:
+        Version: "2008-10-17"
+        Statement:
+          - Sid: LambdaECRImageRetrievalPolicy
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - ecr:BatchGetImage
+              - ecr:GetDownloadUrlForLayer
+              - ecr:SetRepositoryPolicy
+              - ecr:DeleteRepositoryPolicy
+              - ecr:GetRepositoryPolicy
+            Condition:
+              StringLike:
+                aws:sourceArn: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
+      # No lifecycle policy during Lab 7: retain tagged and untagged images.
 
 Outputs:
   RepositoryUri:

@@ -15,3 +15,24 @@ next-env.d.ts
 .env*.local
 .idea/
 .DS_Store
+
+# Terraform providers, state, saved plans and local secret overrides
+infra/terraform.tfvars
+*.tfvars
+*.tfvars.json
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+*.auto.tfvars
+*.auto.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Reviewed non-sensitive inputs for Lab 7 VCS-driven runs only.
+!/infra/lab7.auto.tfvars

@@ -37,6 +37,8 @@ Conditions:
 
 Resources:
   UserPool:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::Cognito::UserPool
     Properties:
       UserPoolName: !Sub "${ProjectName}-users"
@@ -77,6 +79,8 @@ Resources:
   # Hosts the OAuth endpoints Google sign-in goes through:
   # https://<prefix>.auth.<region>.amazoncognito.com
   UserPoolDomain:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::Cognito::UserPoolDomain
     Properties:
       UserPoolId: !Ref UserPool
@@ -85,6 +89,8 @@ Resources:
       ManagedLoginVersion: 2
 
   GoogleIdentityProvider:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::Cognito::UserPoolIdentityProvider
     Condition: HasGoogle
     Properties:
@@ -104,9 +110,9 @@ Resources:
   # never leaves the browser), and the authorization-code flow with PKCE for
   # Google.
   UserPoolClient:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::Cognito::UserPoolClient
-    DependsOn:
-      - GoogleIdentityProvider
     Properties:
       ClientName: !Sub "${ProjectName}-web"
       UserPoolId: !Ref UserPool
@@ -135,6 +141,8 @@ Resources:
       LogoutURLs: !Ref AppUrls
 
   ManagedLoginBranding:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::Cognito::ManagedLoginBranding
     DependsOn:
       - UserPoolDomain

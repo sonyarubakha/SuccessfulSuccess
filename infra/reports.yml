@@ -56,6 +56,8 @@ Parameters:
 
 Resources:
   ReportBucket:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::S3::Bucket
     DependsOn: MailerInvokePermission
     Properties:
@@ -91,6 +93,8 @@ Resources:
           Value: !Ref ProjectName
 
   ReportDeadLetterQueue:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub "${ProjectName}-report-dlq"
@@ -101,6 +105,8 @@ Resources:
           Value: !Ref ProjectName
 
   ReportQueue:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub "${ProjectName}-report-queue"
@@ -114,6 +120,8 @@ Resources:
           Value: !Ref ProjectName
 
   S3GatewayEndpoint:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::EC2::VPCEndpoint
     Properties:
       VpcEndpointType: Gateway
@@ -122,6 +130,8 @@ Resources:
       RouteTableIds: !Ref RouteTableIds
 
   SqsEndpointSelfIngress:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
       GroupId: !Ref FunctionSecurityGroupId
@@ -132,6 +142,8 @@ Resources:
       Description: Lambda functions to SQS interface endpoint
 
   SqsInterfaceEndpoint:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::EC2::VPCEndpoint
     DependsOn: SqsEndpointSelfIngress
     Properties:
@@ -153,6 +165,8 @@ Resources:
             Resource: !GetAtt ReportQueue.Arn
 
   BuilderRole:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -186,6 +200,8 @@ Resources:
           Value: !Ref ProjectName
 
   BuilderLogGroup:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${ProjectName}-report-builder"
@@ -195,6 +211,8 @@ Resources:
           Value: !Ref ProjectName
 
   BuilderFunction:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub "${ProjectName}-report-builder"
@@ -229,6 +247,8 @@ Resources:
           Value: !Ref ProjectName
 
   QueueToBuilder:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::Lambda::EventSourceMapping
     DependsOn:
       - BuilderRole
@@ -240,6 +260,8 @@ Resources:
 
 
   SchedulerRole:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -265,6 +287,8 @@ Resources:
           Value: !Ref ProjectName
 
   WeeklyReportSchedule:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: !Sub "${ProjectName}-weekly-report"
@@ -280,6 +304,8 @@ Resources:
         Input: '{"week":null,"source":"schedule"}'
 
   MailerRole:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -311,6 +337,8 @@ Resources:
           Value: !Ref ProjectName
 
   MailerLogGroup:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${ProjectName}-report-mailer"
@@ -320,6 +348,8 @@ Resources:
           Value: !Ref ProjectName
 
   MailerFunction:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub "${ProjectName}-report-mailer"
@@ -347,6 +377,8 @@ Resources:
           Value: !Ref ProjectName
 
   MailerInvokePermission:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !Ref MailerFunction
@@ -356,6 +388,8 @@ Resources:
       SourceArn: !Sub "arn:${AWS::Partition}:s3:::${ProjectName}-reports-${AWS::AccountId}"
 
   ReportEmailIdentity:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Type: AWS::SES::EmailIdentity
     Properties:
       EmailIdentity: !Ref ReportDomain
