@@ -104,7 +104,7 @@ endef
 .PHONY: help up up-build down down-v logs ps migrate revision seed test lint fmt shell-backend psql \
         aws-whoami llm-hello parse aws-deploy aws-deploy-auth aws-auth-env aws-ecr aws-push aws-deploy-backend aws-deploy-reports report-now aws-migrate aws-url aws-status aws-logs \
         aws-frontend-cert aws-deploy-frontend aws-frontend-url aws-destroy \
-        aws-deploy-ai aws-release-backend infra-ready infra-workflow deploy-backend deploy-frontend
+        aws-deploy-ai aws-release-backend infra-ready infra-workflow infra-plan deploy-backend deploy-frontend
 help:
 	@grep -hE '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
@@ -172,6 +172,9 @@ infra-workflow: ## Show the VCS-driven Terraform workflow and workspace
 	@echo "Edit infra/, review and push to GitHub branch lab7 when authorized."
 	@echo "Review the remote plan and approve manually in $(HCP_WORKSPACE_URL)"
 	@echo "Auto-apply is disabled; Terraform-managed infrastructure is not applied by Make."
+
+infra-plan: ## Request a speculative HCP Terraform plan; never applies
+	$(TERRAFORM) -chdir=infra plan
 
 infra-ready: ## Check access to the existing public HCP Terraform outputs (read-only)
 	@set -e; \

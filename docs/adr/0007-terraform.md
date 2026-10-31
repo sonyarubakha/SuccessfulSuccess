@@ -15,6 +15,15 @@ remain managed by CloudFormation. Terraform reads the shared backend stack's
 outputs rather than adopting those resources. A broader rewrite would expand the
 migration risk without being needed for this lab.
 
+## Alternatives
+
+| Tool | Why or why not for this project |
+|---|---|
+| Terraform | Chosen for declarative imports, explicit plans, references/modules and the required HCP VCS workflow. Its provider model also leaves room for future GitHub, OAuth or DNS integration; this migration manages only the selected AWS scope. We accept responsibility for state security and provider/default differences. |
+| CloudFormation | Already works and keeps stack state in AWS, with change sets and rollback behavior. It remains appropriate for the older stacks. Keeping everything there would avoid this migration, but would not meet the lab's Terraform/HCP workflow objective. |
+| AWS CDK | Offers reusable infrastructure in general-purpose languages, but synthesizes CloudFormation and retains its stack-based deployment model. It adds a language/build layer without providing the chosen Terraform state/import workflow. |
+| OpenTofu | A viable open-source alternative with providers, HCL and a plan/state workflow. This lab standardizes on Terraform and HCP; changing engines and run platform during adoption would expand compatibility and operational review. Reconsider separately if licensing, governance or platform independence becomes a priority. |
+
 ## Decision and migration
 
 Manage Auth, Reports and AI in `infra/` using the AWS provider, with provider
@@ -50,8 +59,13 @@ addresses and provider-specific IDs. Import plans were corrected to remove
 replacements and infrastructure updates before the import was approved. All 40
 imports completed without AWS changes; the final state contains 40 managed
 resources and a subsequent VCS-driven plan reported no changes. `imports.tf` was
-then removed. Do not redeploy the historical `auth.yml`, `reports.yml` or `ai.yml`
-templates or import the same objects into another state.
+then removed. The three migrated CloudFormation templates are deleted from the
+working tree as required by Part 2, Step 3; their source and retention changes
+remain available in Git history. Do not recreate their stacks or import the same
+objects into another state. All other CloudFormation templates remain in place.
+Template names retained in HCL comments and the budget-variable description are
+historical provenance, not file dependencies; the Terraform files are unchanged
+by this cleanup.
 
 ## Remote state and delivery
 
@@ -68,17 +82,58 @@ coordinate operations; access to runs and state remains restricted to authorized
 users. Do not restore old state, move objects, or run competing local mutations as
 part of routine application deployment.
 
+### Who may change infrastructure
+
+Repository contributors may propose HCL/input changes in a branch and pull
+request. A maintainer reviews the intended resource effects before changes reach
+the connected `lab7` branch; an HCP user with apply permission reviews the exact
+VCS plan and manually approves it. Read/plan access alone does not authorize an
+apply. Organization/workspace administrators control membership, variable access
+and OIDC trust; those changes need separate review. This is the operating policy,
+not a claim that branch protections or separation of duties were audited here.
+
+GitHub Actions' application role releases the legacy API code; it does not own
+Auth/Reports/AI infrastructure. For changes requiring both roads, apply compatible
+infrastructure first, then release code, with staged updates for breaking changes.
+The two workflows have no automatic dependency gate. Emergency console changes
+need explicit authorization, an incident record and matching reviewed HCL before
+the next reconciliation; do not blindly revert an intentional emergency fix.
+
 Non-sensitive inputs are committed in `lab7.auto.tfvars`; local
 `terraform.tfvars` remains ignored. Workspace Terraform variables hold sensitive
 `db_password` and `google_client_secret`, plus private `report_recipients` and
 `budget_email` values. Input sensitivity redacts normal presentation but does not
 prevent secrets from being stored in state or plan data. Protect state access,
 HCP tokens and logs, and avoid exposing raw state or unredacted plan JSON.
+The configured Google secret also exists in Cognito's identity-provider settings;
+the builder's database URL contains the password in Lambda environment settings.
+Provider refresh can read these into memory, plan artifacts and remote state.
+Restrict AWS configuration-read permissions as well as HCP access. Do not enable
+debug logging or echo secret variables in CI; sensitivity is not encryption and
+does not protect arbitrary application or provider log messages.
 
-The added `report_queue_name` output demonstrates the delivery workflow: the
-reviewed remote plan should show an output addition with zero AWS resource
-changes. Manual Apply records that output in remote state without changing the
-queue. The repository change itself does not update state.
+The completed `report_queue_name` demonstration used a GitHub-triggered HCP run
+and manual Apply to record the output in remote state without changing the queue
+or other AWS resources. The following plan reported no changes. Preserve the run
+screenshot and plan output as submission evidence; the repository itself does
+not prove which remote run was approved.
+
+### HCP Terraform outage
+
+Deployed AWS resources continue running without HCP; application runtime does
+not read Terraform state. New remote plans, approvals, applies and state/output
+reads may be unavailable. Make commands that require HCP outputs stop, while
+independent legacy application operations may still work with their existing AWS
+credentials and permissions. Do not substitute stale output values silently.
+
+Pause infrastructure changes and wait for service recovery. If a run was
+interrupted, inspect its status, lock and actual AWS effects before starting a
+new plan; an apply may have completed some operations. Never force-unlock an
+active run, initialize a competing local state, or import the same objects to
+bypass the outage. Prolonged-outage recovery requires a separately authorized
+procedure using a protected, verified state version, exclusive ownership,
+credential controls and reconciliation. No alternate backend or automatic
+failover is configured in this project.
 
 ## AWS authentication and operational boundaries
 
@@ -153,3 +208,5 @@ images indefinitely increases storage use.
 - [AWS OIDC dynamic credentials](https://developer.hashicorp.com/terraform/cloud-docs/dynamic-provider-credentials/aws-configuration)
 - [Terraform lifecycle rules](https://developer.hashicorp.com/terraform/language/meta-arguments/lifecycle)
 - [CloudFormation retention policies](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-attribute-deletionpolicy.html)
+- [AWS CDK and CloudFormation](https://docs.aws.amazon.com/cdk/v2/guide/home.html)
+- [OpenTofu overview](https://opentofu.org/docs/intro/)

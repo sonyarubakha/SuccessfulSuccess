@@ -123,9 +123,9 @@ Infrastructure has two owners after Lab 7:
 | CloudFormation | Shared ECR, serverless API/database/network, compatibility API distribution, frontend | `infra/ecr.yml`, `backend-serverless.yml`, `backend.yml`, `frontend.yml` |
 
 The original Auth, Reports and AI stacks were removed after their resources were
-retained and imported. Their YAML templates are historical migration references;
-do not deploy them again. Older CloudFormation infrastructure stays under its
-existing ownership. See [ADR 0007](docs/adr/0007-terraform.md) for the migration.
+retained and imported. Their three YAML templates have been deleted from the
+working tree; migration history remains in Git and ADR 0007. Do not recreate the
+stacks. Older CloudFormation infrastructure stays under its existing ownership. See [ADR 0007](docs/adr/0007-terraform.md) for the migration.
 
 ### HCP Terraform: VCS-driven infrastructure workflow
 
@@ -157,14 +157,18 @@ Open the [HCP workspace](https://app.terraform.io/app/successfulsuccess-lab7-org
 
 Do not run local Terraform apply, import or destroy for this VCS-managed
 infrastructure. Make does not execute Terraform mutations. `make infra-workflow`
-prints the workflow and workspace URL.
+prints the workflow and workspace URL. `make infra-plan` optionally requests a
+speculative remote plan using the current checkout; it never applies and does not
+replace review of the GitHub-triggered run. It requires HCP authentication and an
+initialized cloud backend. Ignored local variable files can affect that preview;
+keep them consistent with VCS inputs. The approved apply always uses the reviewed
+VCS commit.
 
-**Output-only demonstration:** `report_queue_name` in `infra/outputs.tf` reads the
-existing queue name. Once this change is reviewed and pushed, the expected HCP
-plan has **0 resource additions, 0 resource changes, 0 resource deletions** and
-one added output. Review and manually apply that run in HCP to publish the output
-to remote state. The output is unavailable to state readers until that apply;
-none of the existing Make commands depends on it yet.
+**Completed output-only demonstration:** the GitHub-triggered HCP run published
+`report_queue_name` from `infra/outputs.tf` through manual Apply without changing
+AWS resources. The following plan reported no changes. Keep the run's
+**Apply finished** screenshot and the post-migration **No changes** plan output
+with the submission; a local speculative plan does not prove VCS delivery.
 
 ### Credentials, variables and state
 
@@ -352,8 +356,22 @@ cd frontend && npm ci && npm run lint
 
 Infrastructure delivery for Auth/Reports/AI is connected directly from GitHub
 branch `lab7` to HCP Terraform, with plan review and manual apply. The style
-workflow does not deploy. Legacy backend/frontend application releases remain
-explicit Make commands.
+workflow does not deploy. `.github/workflows/deploy-backend.yml` tests the backend
+and, on pushes to `main`, assumes the GitHub OIDC role from `AWS_ROLE_ARN` and
+runs `make aws-release-backend`. Frontend releases remain explicit Make commands.
+
+When a release needs infrastructure and code changes, first apply a reviewed,
+backward-compatible infrastructure change in HCP, then release application code
+through GitHub Actions. For breaking changes, stage compatible infrastructure and
+code updates before removing old settings. The `lab7` infrastructure and `main`
+application workflows are independent: neither waits for the other automatically.
+Verify the HCP run has completed before triggering a dependent application release.
+
+The assignment's drift exercise is separate: demonstrate a deliberate reversible
+console change, a plan-only run showing it, and an approved restoration. Do this
+only with explicit operational authorization; this repository audit does not
+perform the exercise. A real emergency fix must be recorded in HCL and reviewed
+before reconciliation so Terraform does not silently undo the intended fix.
 
 ## Development notes
 
